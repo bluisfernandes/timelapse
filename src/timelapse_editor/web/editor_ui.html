@@ -499,6 +499,9 @@ function render() {
   fill();
   sortLanes();
   const W = widthPx();
+  // the sticky label column can only stick inside its row/header, so those must be as wide as the scrolled content
+  const RW = LABEL + W;
+  $('#hdr').style.width = RW + 'px';
   const touch = touchingIds();
   const bounds = boundaries();
 
@@ -559,7 +562,7 @@ function render() {
   box.appendChild(bl);
 
   for (const L of S.lanes) {
-    const row = document.createElement('div'); row.className = 'row'; row.dataset.lane = L.id;
+    const row = document.createElement('div'); row.className = 'row'; row.dataset.lane = L.id; row.style.width = RW + 'px';
     const head = document.createElement('div'); head.className = 'head';
     if (L.ignored) head.innerHTML = '<b>Ignored</b><small>not included in the export</small>';
     else head.innerHTML = `<span><b>Level ${L.speed}x</b><br><small>${L.id === 'l1x' ? 'default · ' : ''}${AUDIO_NAME[L.audio]}</small></span>
@@ -713,7 +716,7 @@ function tickFrame(ts) {
     if (S.real) vid.pause(); else S.playing = false;
     S.previewEnd = null; S.previewing = false;
   }
-  $('#ph').style.left = (LABEL + S.T * S.pxPerSec) + 'px';
+  placePlayhead();
   const tin = $('#tin');
   if (document.activeElement !== tin) tin.value = fmt(S.T);
   tin.style.width = (tin.value.length + 1) + 'ch';
@@ -1412,6 +1415,14 @@ $('#cut').onclick = cutAtPlayhead;
 $('#confirm').onclick = confirmMerge;
 $('#undo').onclick = undo;
 $('#addMark').onclick = () => addMarkerAt(S.T);
+// the playhead is hidden while it is behind the sticky label column, so it never crosses the labels
+function placePlayhead() {
+  const wrap = $('#wrap'), ph = $('#ph');
+  const x = LABEL + S.T * S.pxPerSec;
+  ph.style.left = x + 'px';
+  ph.style.display = x < wrap.scrollLeft + LABEL ? 'none' : '';
+}
+$('#wrap').addEventListener('scroll', placePlayhead);
 $('#zm').onclick = () => zoom(1 / 1.5);
 $('#zp').onclick = () => zoom(1.5);
 $('#zf').onclick = () => {
