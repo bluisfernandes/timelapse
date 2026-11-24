@@ -716,7 +716,7 @@ function tickFrame(ts) {
     if (S.real) vid.pause(); else S.playing = false;
     S.previewEnd = null; S.previewing = false;
   }
-  $('#ph').style.left = (LABEL + S.T * S.pxPerSec) + 'px';
+  placePlayhead();
   const tin = $('#tin');
   if (document.activeElement !== tin) tin.value = fmt(S.T);
   tin.style.width = (tin.value.length + 1) + 'ch';
@@ -1415,6 +1415,14 @@ $('#cut').onclick = cutAtPlayhead;
 $('#confirm').onclick = confirmMerge;
 $('#undo').onclick = undo;
 $('#addMark').onclick = () => addMarkerAt(S.T);
+// the playhead is hidden while it is behind the sticky label column, so it never crosses the labels
+function placePlayhead() {
+  const wrap = $('#wrap'), ph = $('#ph');
+  const x = LABEL + S.T * S.pxPerSec;
+  ph.style.left = x + 'px';
+  ph.style.display = x < wrap.scrollLeft + LABEL ? 'none' : '';
+}
+$('#wrap').addEventListener('scroll', placePlayhead);
 $('#zm').onclick = () => zoom(1 / 1.5);
 $('#zp').onclick = () => zoom(1.5);
 $('#zf').onclick = () => {
