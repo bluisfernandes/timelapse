@@ -1,17 +1,22 @@
 [project]
-name = "timelapse"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-authors = [
-    { name = "Onofre", email = "bluisfernandes@gmail.com" }
-]
-requires-python = ">=3.12"
-dependencies = []
+name = "timelapse-editor"
+version = "0.3.0"
+description = "Time-lapse editor for action camera footage: per-segment speed, cuts and audio, driven by ffmpeg."
+requires-python = ">=3.14"
+dependencies = []   # the program uses only the standard library; ffmpeg and ffprobe must be on PATH
 
 [project.scripts]
-timelapse = "timelapse:main"
+timelapse-editor = "timelapse_editor:main"
 
 [build-system]
-requires = ["uv_build>=0.12.7,<0.13.0"]
+requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "playwright==1.63.0",   # matches the Chromium build preinstalled in this environment
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

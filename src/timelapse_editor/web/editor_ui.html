@@ -1,0 +1,1432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Time-lapse editor</title>
+<style>
+  :root { color-scheme: dark; --bg:#16181d; --panel:#1f2229; --pop:#262b35; --line:#2c313b; --txt:#e6e8ec; --mut:#8a909c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px system-ui, sans-serif; background:var(--bg); color:var(--txt); }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+  .bar.foot { border-top:1px solid var(--line); border-bottom:0; }
+  .muted, .hint { color:var(--mut); font-size:12px; }
+  button, select, input { background:#2a2f3a; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:5px 9px; font:inherit; }
+  input[type=text] { width:200px; }
+  input[type=number] { width:70px; }
+  button { cursor:pointer; } button:hover { background:#343a47; } button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:#2f6fe4; border-color:#2f6fe4; }
+  .spacer { flex:1; }
+  #status { color:var(--mut); font-size:12px; }
+
+  .preview { display:flex; gap:14px; align-items:center; padding:10px 14px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  #screen { position:relative; width:320px; height:180px; background:linear-gradient(135deg,#2b3a55,#0c0f14); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; text-align:center; color:#cfd6e4; }
+  #screen.fsmode { position:fixed; inset:0; width:100vw !important; height:100vh !important; z-index:200; border-radius:0; }
+  #screen.fsmode #grip { display:none; }
+  #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000; display:none; }
+  #screen.real #vid { display:block; }
+  #screen.real #placeholder { display:none; }
+  #screen .tools { position:absolute; right:6px; top:6px; display:flex; gap:4px; z-index:4; }
+  #screen .tools button { font-size:12px; padding:2px 7px; background:#000a; }
+  #grip { position:absolute; right:0; bottom:0; width:18px; height:18px; cursor:nwse-resize; background:linear-gradient(135deg,transparent 50%,#ffffffaa 50%); z-index:5; }
+  #overlay { position:absolute; left:8px; bottom:8px; background:#000a; padding:3px 7px; border-radius:5px; font-size:12px; }
+  #fname { font-size:13px; font-weight:600; }
+  #timerow { display:flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums; color:var(--mut); flex-wrap:wrap; }
+  #tin { color:var(--txt); font-variant-numeric:tabular-nums; min-width:4ch; }
+
+  #wrap { overflow:auto; max-height:58vh; position:relative; }
+  #inner { position:relative; min-width:100%; }
+
+  #hdr { position:sticky; top:0; z-index:6; display:flex; background:var(--panel); border-bottom:1px solid var(--line); }
+  #hcell { width:190px; flex:0 0 190px; position:sticky; left:0; z-index:7; background:var(--panel); border-right:1px solid var(--line); }
+  .hrow { display:flex; justify-content:space-between; align-items:center; padding:0 6px; gap:4px; }
+  .hrow.a { height:24px; }
+  .hrow.b { height:30px; border-top:1px solid var(--line); }
+  .hrow button { font-size:12px; padding:2px 6px; }
+  .hrow .lbl { font-size:11px; color:var(--mut); }
+  #rwrap { position:relative; flex:0 0 auto; }
+  #ruler { position:relative; height:24px; }
+  #mrow { position:relative; height:30px; border-top:1px solid var(--line); }
+  .tick { position:absolute; top:0; height:24px; border-left:1px solid #3a404c; padding-left:4px; font-size:11px; color:#c8ccd4; white-space:nowrap; pointer-events:none; }
+  .mlabel { position:absolute; top:2px; font-size:10px; color:#aeb4bf; white-space:nowrap; pointer-events:none; padding-left:3px; }
+  .bline2 { position:absolute; top:0; bottom:0; width:1px; background:#ffffff38; pointer-events:none; }
+  .hatch-band { position:absolute; top:0; bottom:0; background:repeating-linear-gradient(45deg,#ffffff30 0 6px,transparent 6px 12px); pointer-events:none; }
+  .flag { position:absolute; top:12px; font-size:11px; background:#ffd166; color:#222; padding:0 6px; border-radius:4px; cursor:pointer; white-space:nowrap; z-index:2; }
+
+  .audiorow { display:flex; border-bottom:1px solid var(--line); min-height:44px; }
+  #ahead { width:190px; flex:0 0 190px; position:sticky; left:0; z-index:5; background:var(--panel); border-right:1px solid var(--line); padding:4px 8px; display:flex; flex-direction:column; gap:3px; }
+  #ahead button { font-size:12px; padding:3px 6px; align-self:flex-start; }
+  #ahead input[type=range] { width:150px; }
+  #wave { display:block; }
+
+  #lanes { position:relative; }
+  .row { position:relative; display:flex; height:54px; border-bottom:1px solid var(--line); }
+  .head { width:190px; flex:0 0 190px; position:sticky; left:0; z-index:5; background:var(--panel); border-right:1px solid var(--line); padding:4px 8px; display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .head b { font-size:13px; }
+  .head small { color:var(--mut); font-size:11px; }
+  .head button { font-size:12px; padding:2px 7px; }
+  .head .btns { display:flex; gap:4px; }
+  .track { position:relative; flex:0 0 auto; height:54px; }
+  .blk { position:absolute; top:6px; bottom:6px; border-radius:5px; overflow:hidden; color:#fff; font-size:11px; border:2px solid transparent; cursor:grab; user-select:none; display:flex; align-items:center; gap:4px; padding-right:4px; z-index:3; }
+  .blk.pend { border-style:dashed; border-color:#ffd16699; }
+  .blk.msel { border-color:#ffd166; box-shadow:0 0 0 1px #ffd166 inset; }
+  .blk.sel { box-shadow:0 0 0 2px #fff; }
+  .blk.ign { background:repeating-linear-gradient(45deg,#ffffff30 0 6px,transparent 6px 12px) #3a3f4a !important; color:#ddd; }
+  .blk i { display:block; width:56px; height:100%; flex:0 0 56px; background:#0003; }
+  .blk span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-shadow:0 1px 2px #000; }
+  .blk select { font-size:10px; padding:1px; max-width:72px; background:#0008; color:#fff; border:1px solid #fff5; border-radius:4px; }
+  .eh { position:absolute; top:0; bottom:0; width:7px; cursor:ew-resize; background:#fff3; }
+  .eh.l { left:0; } .eh.r { right:0; }
+  .pop { position:absolute; left:196px; top:6px; z-index:9; background:var(--pop); border:1px solid var(--line); border-radius:8px; padding:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; box-shadow:0 6px 18px #000a; }
+  .pop button.sp { font-size:12px; padding:3px 7px; }
+  #bounds { position:absolute; top:0; bottom:0; left:0; right:0; pointer-events:none; z-index:4; }
+  .bline { position:absolute; top:0; bottom:0; width:1px; background:#ffffff38; }
+  #ph { position:absolute; top:0; bottom:0; width:2px; background:#ff4d4d; pointer-events:none; z-index:8; }
+  #tmpc { position:absolute; top:0; bottom:0; width:2px; background:#ffd166; pointer-events:none; z-index:9; display:none; }
+  #scrubbox { position:fixed; display:none; z-index:300; background:#11131c; border:1px solid #444; border-radius:8px; padding:6px; font-size:12px; pointer-events:none; }
+  #scrubbox canvas { display:block; background:#000; border-radius:4px; margin-bottom:4px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; margin-right:4px; }
+
+  #modal { position:fixed; inset:0; background:#000b; display:none; align-items:center; justify-content:center; z-index:500; }
+  #modal.open { display:flex; }
+  #mbox { background:var(--panel); border:1px solid var(--line); border-radius:12px; width:min(620px, 92vw); max-height:84vh; overflow:auto; padding:18px 22px; line-height:1.5; }
+  #mbox h2 { margin:0 0 8px; font-size:18px; }
+  #mbox h3 { margin:16px 0 6px; font-size:14px; color:#cfd6e4; }
+  #mbox ol, #mbox ul { padding-left:20px; }
+  #mbox li { margin-bottom:6px; }
+  #mbox kbd { background:#2a2f3a; border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:12px; }
+  .mtabs { display:flex; gap:6px; margin-bottom:10px; }
+  .mtabs button.on { background:#2f6fe4; border-color:#2f6fe4; }
+  .mfoot { display:flex; justify-content:flex-end; margin-top:14px; }
+  #pvid { display:none; }
+  .fsplay { display:none; position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:6; font-size:18px; padding:6px 16px; background:#000a; }
+  #screen.fsmode .fsplay { display:block; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <b>Time-lapse editor</b> <span class="muted" id="ver">v0.3</span>
+  <span class="spacer"></span>
+  <button id="loadBtn" title="Import video">Import</button>
+  <button id="openBtn" title="Open project">📂</button>
+  <button id="saveBtn" title="Save project">💾</button>
+  <button id="exportBtn" class="primary">Export video</button>
+  <div id="browser" style="display:none;position:fixed;top:52px;left:14px;z-index:21;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:520px;max-width:92vw;flex-direction:column;gap:8px;box-shadow:0 6px 18px #000a">
+    <b id="brTitle">Import video</b>
+    <span id="brPath" class="hint" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+    <div id="brList" style="display:flex;flex-direction:column;gap:3px;max-height:50vh;overflow:auto"></div>
+    <span id="saveRow" style="display:none;justify-content:space-between;align-items:center;gap:8px">
+      <span style="display:flex;gap:8px;align-items:center">
+        <select id="frameFmt" title="Image format"><option value="png">PNG</option><option value="jpg">JPG</option></select>
+        <label class="hint" id="frameQlbl">Quality <b id="frameQv">95</b></label>
+        <input type="range" id="frameQ" min="1" max="100" step="1" value="95" style="width:120px">
+      </span>
+      <button id="brSave" class="primary">Save to this folder</button>
+    </span>
+    <span style="display:flex;justify-content:space-between;align-items:center"><small class="hint">Click a folder to open it; click a video to import it.</small><button id="brCancel">Cancel</button></span>
+  </div>
+  <div id="expbox"style="display:none;position:fixed;top:52px;right:14px;z-index:20;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:340px;box-shadow:0 6px 18px #000a;flex-direction:column;gap:8px">
+    <b>Output format</b>
+    <label><input type="radio" name="fmt" value="mp4_h264" checked> MP4 (H.264) — default <span class="hint" data-size="mp4_h264"></span></label>
+    <label><input type="radio" name="fmt" value="mp4_h265"> MP4 (H.265) <span class="hint" data-size="mp4_h265"></span></label>
+    <label><input type="radio" name="fmt" value="mov_h264"> MOV (H.264) <span class="hint" data-size="mov_h264"></span></label>
+    <label class="hint" style="display:flex;gap:6px;align-items:center">Quality
+      <select id="expQ" title="Encoding quality">
+        <option value="high" selected>High</option>
+        <option value="medium">Medium</option>
+        <option value="compact">Compact</option>
+        <option value="lossless">Lossless (very large file)</option>
+      </select>
+    </label>
+    <small class="hint" id="expcov"></small>
+    <div id="expprog" style="display:none;flex-direction:column;gap:4px">
+      <div style="height:8px;background:#0005;border-radius:4px;overflow:hidden"><div id="expbar" style="height:100%;width:0;background:#2f6fe4;transition:width .3s"></div></div>
+      <small class="hint" id="exptxt"></small>
+    </div>
+    <small class="hint" id="expnote"></small>
+    <span style="display:flex;gap:6px;justify-content:flex-end"><button id="expGo" class="primary">Export</button><button id="expCancel">Cancel</button><button id="expClose" style="display:none">Close</button></span>
+  </div>
+  <button id="helpBtn" title="About and tutorial">Help</button>
+  <input type="file" id="file" accept="video/*" hidden>
+  <input type="file" id="pfile" accept=".json,application/json" hidden>
+  <span id="status"></span>
+</div>
+
+<div class="preview">
+  <div id="screen">
+    <video id="vid" playsinline></video>
+    <video id="pvid" playsinline muted preload="auto"></video>
+    <div id="placeholder"><div><b>Simulation</b><br><span class="muted">Load a video to play with picture and sound. The audio bar is still simulated.</span></div></div>
+    <div class="tools"><button id="fs" title="Full screen">⛶</button></div>
+    <div id="overlay"></div>
+    <button id="fsPlay" class="fsplay" title="Pause / resume">▶</button>
+    <div id="grip" title="Drag to resize"></div>
+  </div>
+  <div>
+    <div id="fname">DJI_0001.MP4 (simulated)</div>
+    <div id="timerow">
+      <input type="text" id="tin" title="Type the time and press Enter (e.g. 1:05.5 or 65.5)">
+      <span id="tdur"></span>
+      <span id="stepbox" style="display:inline-flex;gap:4px;align-items:center">
+        <button id="stepL" title="Previous frame (left arrow)">◀</button>
+        <button id="stepR" title="Next frame (right arrow)">▶</button>
+        <select id="stepN" title="Step size"><option value="1">1 frame</option><option value="10">10 frames</option></select>
+      </span>
+    </div>
+    <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+      <button id="play" class="primary">▶ Play</button>
+      <button id="stop" title="Stop and go back to the start">■ Stop</button>
+      <button id="frameBtn" title="Export the current frame as an image">📷</button>
+      <button id="prev">Play selected segment</button>
+      <span id="volbox" style="display:inline-flex;gap:6px;align-items:center">
+        <button id="mute" title="Mute" style="padding:4px 7px"></button>
+        <input type="range" id="vol" min="0" max="1" step="0.01" value="1" title="Playback volume" style="width:110px">
+      </span>
+    </div>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="cut">Cut at cursor</button>
+  <button id="confirm" style="display:none">Confirm merge</button>
+  <button id="undo">Undo</button>
+  <span class="spacer"></span>
+  <span id="cuthint" class="hint"></span>
+</div>
+
+<div id="wrap"><div id="inner">
+  <div id="hdr">
+    <div id="hcell">
+      <div class="hrow a">
+        <span><button id="zm" title="Zoom out">−</button> <button id="zp" title="Zoom in">+</button> <button id="zf" title="Fit to screen">Fit</button></span>
+        <span class="lbl">original</span>
+      </div>
+      <div class="hrow b">
+        <span><button id="addMark" title="Marker at cursor">⚑</button></span>
+        <span class="lbl">final</span>
+      </div>
+    </div>
+    <div id="rwrap">
+      <div id="ruler"></div>
+      <div id="mrow"></div>
+    </div>
+  </div>
+
+  <div class="audiorow">
+    <div id="ahead"></div>
+    <div id="wavewrap" style="position:relative"><div id="wavetiles" style="display:flex;height:44px"></div><div id="thline" style="position:absolute;left:0;right:0;top:0;height:0;border-top:1px dashed #ffd166aa;pointer-events:none"></div></div>
+  </div>
+
+  <div id="lanes"></div>
+  <div id="ph"></div>
+  <div id="tmpc"></div>
+</div></div>
+
+<div id="scrubbox"><canvas id="pcan"></canvas><div id="pcap"></div></div>
+
+<div class="bar foot">
+  <span id="foothint" class="hint"></span>
+  <span class="spacer"></span>
+  <span class="hint">Drag sideways to change start/end. Drag up or down to change level. Ctrl + click selects one by one. Shift + click selects the range. Esc cancels a drag.</span>
+</div>
+
+<div id="modal">
+  <div id="mbox">
+    <div class="mtabs">
+      <button data-tab="about" class="on">About</button>
+      <button data-tab="tutorial">Tutorial</button>
+    </div>
+    <div id="mcontent"></div>
+    <div class="mfoot"><button id="mclose">Close</button></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const vid = $('#vid');
+const pvid = $('#pvid');
+let GLOBAL_MUTE = false, GLOBAL_VOL = 1;
+const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
+const PALETTE = ['#4f8cff', '#ff8a3d', '#3ec68a', '#c678ff', '#ff5a7a', '#e7c33c'];
+const LABEL = 190, STEP = 0.1;
+const AUDIO_NAME = { mute: 'mute', original: 'original audio', corrected: 'corrected audio' };
+let D = 120;
+let FPS = 30;           // frames per second of the loaded video
+let AUD = [];
+const SPEECH = [[8, 20], [34, 41], [60, 72], [90, 98]];   // simulated speech, used without a real video
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+function genAudio() {
+  AUD = []; seed = 7;
+  for (let i = 0; i < D / STEP; i++) {
+    const t = i * STEP;
+    let v = 0.12 + 0.07 * rnd();
+    for (const [a, b] of SPEECH) if (t >= a && t < b && b <= D) v = 0.5 + 0.35 * rnd() * Math.abs(Math.sin(t * 7));
+    AUD.push(Math.min(1, v));
+  }
+}
+genAudio();
+
+const S = { pxPerSec: 12, segments: [], lanes: [], marks: [], sel: null, msel: [], anchor: null, hist: [], n: 1,
+            drag: null, scrub: null, rz: null, T: 0, playing: false, threshold: 0.4, audioOpen: false,
+            editLane: null, addFor: null, real: false, previewing: false, previewEnd: null, last: 0 };
+
+const uid = () => 's' + (S.n++);
+const lane = id => S.lanes.find(l => l.id === id);
+const laneIdx = id => S.lanes.findIndex(l => l.id === id);
+const fmt = t => Math.floor(t / 60) + ':' + (t % 60).toFixed(1).padStart(4, '0');
+const snapT = t => Math.round(t * FPS) / FPS;   // snaps to the frame
+const snap = t => snapT(t);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const widthPx = () => Math.max(200, D * S.pxPerSec);
+const status = msg => { $('#status').textContent = msg; };
+
+function colorOf(L) {
+  if (L.id === 'l1x') return '#3b4a66';
+  const users = S.lanes.filter(x => x.id !== 'l1x' && !x.ignored);
+  return PALETTE[users.indexOf(L) % PALETTE.length];
+}
+function speedOptions(cur, withIgnore) {
+  let o = [...SPEEDS]; if (typeof cur === 'number' && !o.includes(cur)) o.push(cur); o.sort((a, b) => a - b);
+  let h = o.map(v => `<option value="${v}"${v === cur ? ' selected' : ''}>${v}x</option>`).join('');
+  if (withIgnore) h += `<option value="ign"${cur === 'ign' ? ' selected' : ''}>✕ ignore</option>`;
+  return h;
+}
+
+// ---------- speech detection ----------
+// audio level already scaled for the graph (capped at 1); the threshold applies to this value
+function audAt(i) { return Math.min(1, AUD[i] * (S.gain ?? 1)); }
+function regions(th) {
+  const out = []; let s = null;
+  for (let i = 0; i <= AUD.length; i++) {
+    const on = i < AUD.length && audAt(i) >= th;
+    if (on && s === null) s = i;
+    if (!on && s !== null) { if ((i - s) * STEP >= 1.0) out.push([s * STEP, i * STEP]); s = null; }
+  }
+  return out;
+}
+
+// ---------- model ----------
+// The whole video is covered by real segments. Where no user segment exists, there is a 1x segment
+// (created by fill), which can be selected, cut and moved like the others.
+function fill() {
+  const segs = [...S.segments].sort((a, b) => a.start - b.start), add = [];
+  let t = 0;
+  for (const g of segs) {
+    if (g.start > t + 0.001) add.push({ id: 'f' + t.toFixed(3), start: t, end: g.start, level: 'l1x' });
+    t = Math.max(t, g.end);
+  }
+  if (D > t + 0.001) add.push({ id: 'f' + t.toFixed(3), start: t, end: D, level: 'l1x' });
+  if (add.length) S.segments = [...S.segments, ...add].sort((a, b) => a.start - b.start);
+}
+function reset() {
+  S.lanes = [{ id: 'l1x', speed: 1, audio: 'original' }, { id: 'l4', speed: 4, audio: 'mute' },
+             { id: 'l8', speed: 8, audio: 'mute' }, { id: 'ign', ignored: true }];
+  // start: whole video at 1x, with cuts at 1/3 and 2/3 (three segments), original audio
+  const q = v => Math.round(v * FPS) / FPS;
+  S.segments = [{ id: uid(), start: q(D / 3), end: q(2 * D / 3), level: 'l1x' }];
+  fill();
+  S.sel = null; S.msel = []; S.anchor = null; S.hist = []; S.marks = []; S.editLane = null; S.addFor = null;
+}
+function snapshot() {
+  S.hist.push(JSON.stringify({ segments: S.segments, lanes: S.lanes, marks: S.marks }));
+  if (S.hist.length > 200) S.hist.shift();
+  S.anchor = null;
+}
+function undo() { const h = S.hist.pop(); if (!h) return; Object.assign(S, JSON.parse(h)); S.sel = null; S.msel = []; S.anchor = null; render(); }
+
+function timeline() { return [...S.segments].sort((a, b) => a.start - b.start); }
+const findPiece = k => S.segments.find(g => g.id === k);
+const pieceAt = t => timeline().find(p => t >= p.start - 1e-6 && t < p.end - 1e-6);
+
+function outAt(t) {
+  let acc = 0;
+  for (const p of timeline()) {
+    const L = lane(p.level); if (L.ignored) continue;
+    if (p.end <= t) acc += (p.end - p.start) / L.speed;
+    else if (p.start < t) { acc += (t - p.start) / L.speed; break; }
+    else break;
+  }
+  return acc;
+}
+function boundaries() {
+  const set = new Set();
+  for (const p of timeline()) { set.add(+p.start.toFixed(3)); set.add(+p.end.toFixed(3)); }
+  return [...set].sort((a, b) => a - b);
+}
+function touchingIds() {
+  const segs = timeline(), ids = new Set();
+  for (let i = 0; i < segs.length - 1; i++) {
+    const a = segs[i], b = segs[i + 1];
+    if (a.level === b.level && Math.abs(a.end - b.start) < 0.001) { ids.add(a.id); ids.add(b.id); }
+  }
+  return ids;
+}
+function assign(s, e, level, exclude) {
+  const out = [];
+  for (const g of S.segments) {
+    if (g.id === exclude) continue;
+    if (g.end <= s + 1e-6 || g.start >= e - 1e-6) { out.push(g); continue; }
+    if (g.start < s - 1e-6) out.push({ ...g, end: s });
+    if (g.end > e + 1e-6) out.push({ ...g, id: uid(), start: e });
+  }
+  if (e - s > 0.05) out.push({ id: uid(), start: s, end: e, level });
+  S.segments = out.sort((a, b) => a.start - b.start);
+  fill();
+}
+function createLaneAfter(v, afterId) {
+  snapshot();
+  const id = 'l' + (S.n++);
+  const idx = afterId ? laneIdx(afterId) + 1 : S.lanes.findIndex(l => l.ignored);
+  S.lanes.splice(idx, 0, { id, speed: v, audio: 'original' });
+  S.addFor = null; render();
+}
+function levelForSpeed(v) {
+  let L = S.lanes.find(l => !l.ignored && l.speed === v);
+  if (!L) { const id = 'l' + (S.n++); L = { id, speed: v, audio: 'original' }; S.lanes.splice(S.lanes.findIndex(l => l.ignored), 0, L); }
+  return L.id;
+}
+function shiftLevel(level, delta) {
+  const j = clamp(laneIdx(level) + delta, 0, S.lanes.length - 1);
+  return S.lanes[j].id;
+}
+
+// ---------- cut ----------
+function cutState() {
+  const sel = S.sel && findPiece(S.sel);
+  if (!sel) return { ok: false, msg: 'Select a segment (click or Ctrl/Shift + click).' };
+  if (S.T <= sel.start + 0.05 || S.T >= sel.end - 0.05) return { ok: false, msg: 'Place the cursor inside the selected segment.' };
+  return { ok: true, msg: 'Cuts the segment at the cursor position. Also works for the 1x level.' };
+}
+function cutAtPlayhead() {
+  if (!cutState().ok) return;
+  const sel = findPiece(S.sel), t = snapT(S.T);
+  snapshot();
+  S.segments = S.segments.filter(g => g.id !== sel.id);
+  S.segments.push({ id: uid(), start: sel.start, end: t, level: sel.level }, { id: uid(), start: t, end: sel.end, level: sel.level });
+  S.segments.sort((a, b) => a.start - b.start);
+  S.sel = null; S.msel = []; render();
+}
+
+// ---------- selection ----------
+function rangeSelect(a, b) {
+  const lo = Math.min(a.start, b.start), hi = Math.max(a.end, b.end);
+  let levels;
+  if (a.level === b.level) levels = [a.level];
+  else {
+    const i = laneIdx(a.level), j = laneIdx(b.level);
+    levels = S.lanes.slice(Math.min(i, j), Math.max(i, j) + 1).map(l => l.id);
+  }
+  return S.segments.filter(g => levels.includes(g.level) && g.end > lo + 1e-6 && g.start < hi - 1e-6).map(g => g.id);
+}
+function selectClick(d) {
+  const p = findPiece(d.key);
+  if (!p) { if (!d.ctrl && !d.shift) S.msel = []; S.sel = d.key; return render(); }
+  const me = { id: p.id, level: p.level, start: p.start, end: p.end };
+  if (d.shift && S.anchor) S.msel = rangeSelect(S.anchor, me);
+  else if (d.ctrl) {
+    S.msel = S.msel.includes(p.id) ? S.msel.filter(x => x !== p.id) : [...S.msel, p.id];
+    S.anchor = me;
+  } else { S.msel = [p.id]; S.anchor = me; }
+  S.sel = d.key; render();
+}
+
+// ---------- merge ----------
+function mergeGroup() {
+  if (S.msel.length < 2) return null;
+  const segs = S.msel.map(id => S.segments.find(g => g.id === id)).filter(Boolean).sort((a, b) => a.start - b.start);
+  if (segs.length !== S.msel.length) return null;
+  for (let i = 0; i < segs.length; i++) {
+    if (segs[i].level !== segs[0].level) return null;
+    if (i && Math.abs(segs[i - 1].end - segs[i].start) > 0.001) return null;
+  }
+  return segs;
+}
+function confirmMerge() {
+  const g = mergeGroup(); if (!g) return;
+  snapshot();
+  S.segments = S.segments.filter(x => !g.some(y => y.id === x.id));
+  S.segments.push({ id: uid(), start: g[0].start, end: g[g.length - 1].end, level: g[0].level });
+  S.segments.sort((a, b) => a.start - b.start);
+  S.msel = []; S.sel = null; render();
+}
+
+function dropMove(d) {
+  if (d.group) {
+    const moves = S.segments.filter(g => d.group.includes(g.id))
+      .map(g => ({ start: g.start, end: g.end, level: shiftLevel(g.level, d.delta || 0) }));
+    S.segments = S.segments.filter(g => !d.group.includes(g.id));
+    fill();
+    for (const m of moves) assign(m.start, m.end, m.level);
+  } else {
+    const tgt = shiftLevel(d.level, d.delta || 0);
+    if (tgt !== d.level) assign(d.start, d.end, tgt, d.id);
+  }
+}
+
+function markSpeechAs1x() {
+  snapshot();
+  for (const [a, b] of regions(S.threshold)) assign(a, b, 'l1x');
+  S.sel = null; S.msel = []; render();
+}
+function markSpeechStarts() {
+  snapshot();
+  let n = 0;
+  for (const [a] of regions(S.threshold)) {
+    if (S.marks.some(m => Math.abs(m.t - a) < 0.1)) continue;
+    S.marks.push({ t: snapT(a) }); n++;
+  }
+  S.marks.sort((x, y) => x.t - y.t);
+  render();
+  status(n ? `${n} marker(s) created at the start of the speech.` : 'The speech sections already have a marker.');
+}
+function addMarkerAt(t) {
+  snapshot();
+  S.marks.push({ t: Math.round(t * 10) / 10 });
+  S.marks.sort((a, b) => a.t - b.t); render();
+}
+
+// ---------- render ----------
+// Level order: 1x first, increasing speeds, Ignored last.
+// Segments follow their level (they reference it by id), so they move with it.
+function sortLanes() {
+  const um = S.lanes.find(l => l.id === 'l1x');
+  const ign = S.lanes.find(l => l.ignored);
+  const mid = S.lanes.filter(l => l !== um && l !== ign).sort((a, b) => a.speed - b.speed);
+  S.lanes = [um, ...mid, ign].filter(Boolean);
+}
+function render() {
+  fill();
+  sortLanes();
+  const W = widthPx();
+  const touch = touchingIds();
+  const bounds = boundaries();
+
+  const hr = $('#ruler'); hr.style.width = W + 'px'; hr.innerHTML = '';
+  const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120].find(s => s * S.pxPerSec >= 70) || 120;
+  for (let t = 0; t <= D + 0.001; t += step) {
+    const a = document.createElement('div'); a.className = 'tick';
+    a.style.left = t * S.pxPerSec + 'px'; a.textContent = fmt(t); hr.appendChild(a);
+  }
+
+  const mr = $('#mrow'); mr.style.width = W + 'px'; mr.innerHTML = '';
+  for (const p of timeline()) {
+    if (!lane(p.level).ignored) continue;
+    const band = document.createElement('div'); band.className = 'hatch-band';
+    band.style.left = p.start * S.pxPerSec + 'px';
+    band.style.width = (p.end - p.start) * S.pxPerSec + 'px';
+    mr.appendChild(band);
+  }
+  let lastX = -999;
+  for (const t of bounds) {
+    const x = t * S.pxPerSec;
+    const line = document.createElement('div'); line.className = 'bline2'; line.style.left = x + 'px'; mr.appendChild(line);
+    if (x - lastX >= 46) {
+      const lb = document.createElement('div'); lb.className = 'mlabel'; lb.style.left = x + 'px';
+      lb.textContent = fmt(outAt(t)); mr.appendChild(lb); lastX = x;
+    }
+  }
+  S.marks.forEach((m, i) => {
+    const f = document.createElement('div'); f.className = 'flag';
+    f.dataset.t = m.t; f.style.left = (m.t * S.pxPerSec) + 'px';
+    f.textContent = '⚑ ' + (i + 1); f.title = 'Double-click: remove';
+    mr.appendChild(f);
+  });
+
+  $('#ahead').innerHTML = aheadHTML();
+  drawWave(W);
+
+  const d = S.drag;
+  const items = timeline().map(p => {
+    const q = { ...p, pend: touch.has(p.id) };
+    if (d && d.moved) {
+      if (d.mode === 'move' && (d.group ? d.group.includes(p.id) : p.id === d.key))
+        q.level = shiftLevel(p.level, d.delta || 0);
+      if (!d.group && p.id === d.key) {
+        if (d.mode === 'l') q.start = d.ns;
+        if (d.mode === 'r') q.end = d.ne;
+      }
+    }
+    return q;
+  });
+
+  const box = $('#lanes'); box.innerHTML = '';
+  const bl = document.createElement('div'); bl.id = 'bounds';
+  for (const t of bounds) {
+    const l = document.createElement('div'); l.className = 'bline';
+    l.style.left = (LABEL + t * S.pxPerSec) + 'px'; bl.appendChild(l);
+  }
+  box.appendChild(bl);
+
+  for (const L of S.lanes) {
+    const row = document.createElement('div'); row.className = 'row'; row.dataset.lane = L.id;
+    const head = document.createElement('div'); head.className = 'head';
+    if (L.ignored) head.innerHTML = '<b>Ignored</b><small>not included in the export</small>';
+    else head.innerHTML = `<span><b>Level ${L.speed}x</b><br><small>${L.id === 'l1x' ? 'default · ' : ''}${AUDIO_NAME[L.audio]}</small></span>
+      <span class="btns">${S.lanes.indexOf(L) === 0 ? '<button data-act="addafter" title="Create level">+</button>' : ''}<button data-act="edit" title="Edit speed and audio">✎</button></span>`;
+    row.appendChild(head);
+    const track = document.createElement('div'); track.className = 'track'; track.style.width = W + 'px';
+    for (const p of items.filter(p => p.level === L.id)) track.appendChild(blockEl(p, L, touch));
+    row.appendChild(track);
+    if (S.editLane === L.id && !L.ignored) row.appendChild(popEl(L));
+    if (S.addFor === L.id) row.appendChild(addPopEl(L));
+    box.appendChild(row);
+  }
+  updateButtons();
+}
+
+function popEl(L) {
+  const p = document.createElement('div'); p.className = 'pop';
+  p.innerHTML = `<select data-act="speed">${speedOptions(L.speed, false)}</select>
+    <select data-act="audio">
+      <option value="mute"${L.audio === 'mute' ? ' selected' : ''}>mute audio</option>
+      <option value="original"${L.audio === 'original' ? ' selected' : ''}>original audio</option>
+      <option value="corrected"${L.audio === 'corrected' ? ' selected' : ''}>corrected audio</option>
+    </select>
+    <label class="hint" style="display:inline-flex;gap:4px;align-items:center">level volume
+      <input type="range" data-act="vol" min="0" max="1" step="0.01" value="${L.vol ?? 1}" style="width:110px">
+    </label>
+    ${L.id === 'l1x' ? '' : '<button data-act="del">delete level</button>'}`;
+  return p;
+}
+function addPopEl(L) {
+  const p = document.createElement('div'); p.className = 'pop';
+  p.innerHTML = SPEEDS.map(v => `<button class="sp" data-sp="${v}" data-after="${L.id}">${v}x</button>`).join('') +
+    `<input type="number" id="custSp" min="0.05" max="16" step="0.1" placeholder="other"><button data-act="addcustom" data-after="${L.id}">create</button>`;
+  return p;
+}
+
+function aheadHTML() {
+  let h = `<button data-act="audio">Audio · intensity ${S.audioOpen ? '▴' : '▾'}</button>`;
+  if (S.audioOpen) {
+    h += `<label class="hint">Graph scale: <b id="gv">${(S.gain ?? 1).toFixed(1)}</b>x</label>
+      <input type="range" data-act="gain" min="1" max="20" step="0.5" value="${S.gain ?? 1}">
+      <button data-act="gainAuto">Auto</button>
+      <label class="hint">Speech threshold: <b id="thv">${S.threshold.toFixed(2)}</b></label>
+      <input type="range" data-act="threshold" min="0.01" max="0.8" step="0.01" value="${S.threshold}">
+      <button data-act="speech1x">Mark speech as 1x</button>
+      <button data-act="speechMark">Mark start of speech</button>`;
+  }
+  h += `<span class="hint"><i class="sw" style="background:#3ec68a"></i>speech <i class="sw" style="background:#5b6478"></i>ambient</span>`;
+  return h;
+}
+
+function blockEl(p, L, touch) {
+  const d = document.createElement('div');
+  const w = Math.max(6, (p.end - p.start) * S.pxPerSec);
+  d.className = 'blk' + (p.id === S.sel ? ' sel' : '') + (touch.has(p.id) ? ' pend' : '') +
+                (S.msel.includes(p.id) ? ' msel' : '') + (L.ignored ? ' ign' : '');
+  d.dataset.key = p.id;
+  d.style.left = (p.start * S.pxPerSec) + 'px'; d.style.width = w + 'px'; d.style.top = '6px';
+  if (!L.ignored) d.style.background = colorOf(L);
+  const cur = L.ignored ? 'ign' : L.speed;
+  // thumbnail only with a real video: without one, the page does not request /api/thumb (avoids 404 in the console)
+  d.innerHTML = (w > 90 && S.real ? `<i style="background-image:url('/api/thumb?f=${Math.round(p.start * FPS)}&v=${THUMB_V}');background-size:cover;background-position:center"></i>` : '') +
+    `<span>${L.ignored ? '✕ Ignored' : L.speed + 'x'} · ${L.ignored ? '' : AUDIO_NAME[L.audio]} · ${fmt(p.start)}–${fmt(p.end)}</span>` +
+    (w > 190 ? `<select class="bsp">${speedOptions(cur, true)}</select>` : '') +
+    '<em class="eh l"></em><em class="eh r"></em>';
+  return d;
+}
+
+const WAVE_H = 44;   // height of the audio track (without the empty area below the text)
+// browsers do not draw canvases wider than about 65 thousand pixels: the graph is split into parts
+const WAVE_TILE = 16000;
+function drawWave(W) {
+  const box = $('#wavetiles');
+  box.innerHTML = '';
+  for (let x0 = 0; x0 < W; x0 += WAVE_TILE) {
+    const w = Math.min(WAVE_TILE, W - x0);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = WAVE_H; c.style.width = w + 'px'; c.style.height = WAVE_H + 'px';
+    box.appendChild(c);
+    const ctx = c.getContext('2d');
+    ctx.translate(-x0, 0);   // draws in the coordinates of the whole graph
+    for (const [a, b] of regions(S.threshold)) { ctx.fillStyle = '#3ec68a22'; ctx.fillRect(a * S.pxPerSec, 0, (b - a) * S.pxPerSec, WAVE_H); }
+    AUD.forEach((_raw, i) => {
+      const v = audAt(i);
+      ctx.fillStyle = v >= S.threshold ? '#3ec68a' : '#5b6478';
+      ctx.fillRect(i * STEP * S.pxPerSec, WAVE_H - v * (WAVE_H - 4), Math.max(1, STEP * S.pxPerSec - 1), v * (WAVE_H - 4));
+    });
+  }
+  // threshold line: separate element over the graph, to keep it sharp when zoomed in
+  $('#thline').style.top = (WAVE_H - S.threshold * (WAVE_H - 4)) + 'px';
+  $('#thline').style.width = W + 'px';
+}
+
+function updateButtons() {
+  const cs = cutState(), g = mergeGroup();
+  $('#cut').disabled = !cs.ok;
+  $('#cuthint').textContent = cs.msg;
+  $('#confirm').style.display = g ? '' : 'none';
+  $('#undo').disabled = !S.hist.length;
+  $('#prev').disabled = !(S.sel && findPiece(S.sel));
+  if (S.msel.length >= 2) {
+    $('#foothint').textContent = g
+      ? `${S.msel.length} segments selected and adjacent. Use Confirm merge to join them. Shift + click changes the selection.`
+      : `${S.msel.length} segments selected. To merge, select adjacent segments of the same level.`;
+  } else $('#foothint').textContent = '';
+}
+
+// ---------- playback ----------
+function seek(t) {
+  S.T = snapT(clamp(t, 0, D));
+  if (S.real) vid.currentTime = S.T;
+}
+function parseTime(txt) {
+  const s = txt.trim().replace(',', '.');
+  if (!s) return null;
+  let v;
+  if (s.includes(':')) {
+    const [m, rest] = s.split(':');
+    v = (parseFloat(m) || 0) * 60 + (parseFloat(rest) || 0);
+  } else v = parseFloat(s);
+  return Number.isFinite(v) ? v : null;
+}
+function tickFrame(ts) {
+  const dt = S.last ? (ts - S.last) / 1000 : 0;
+  S.last = ts;
+  if (S.real) {
+    if (!S.scrub) S.T = vid.currentTime;
+    const p = pieceAt(S.T);
+    if (p && !S.scrub) {
+      const L = lane(p.level);
+      if (L.ignored) {
+        if (!vid.paused && !S.previewing) vid.currentTime = p.end;
+        vid.playbackRate = 1; vid.muted = GLOBAL_MUTE; vid.volume = clamp(GLOBAL_VOL, 0, 1);
+      } else {
+        vid.playbackRate = clamp(L.speed, 0.0625, 16);
+        vid.preservesPitch = L.audio === 'corrected';
+        vid.muted = GLOBAL_MUTE || L.audio === 'mute';
+        vid.volume = clamp(GLOBAL_VOL * (L.vol ?? 1), 0, 1);
+      }
+    }
+  } else if (S.playing) {
+    const p = pieceAt(S.T);
+    if (!p) S.playing = false;
+    else {
+      const L = lane(p.level);
+      if (L.ignored && !S.previewing) S.T = p.end;
+      else S.T += dt * (L.ignored ? 1 : L.speed);
+    }
+  }
+  if (S.previewEnd !== null && S.T >= S.previewEnd) {
+    if (S.real) vid.pause(); else S.playing = false;
+    S.previewEnd = null; S.previewing = false;
+  }
+  $('#ph').style.left = (LABEL + S.T * S.pxPerSec) + 'px';
+  const tin = $('#tin');
+  if (document.activeElement !== tin) tin.value = fmt(S.T);
+  tin.style.width = (tin.value.length + 1) + 'ch';
+  $('#tdur').textContent = '/ ' + fmt(D) + '  ·  frame ' + Math.round(S.T * FPS);
+  const p = pieceAt(S.T);
+  if (p) { const L = lane(p.level); $('#overlay').textContent = L.ignored ? 'Ignored segment (skipped)' : `${L.speed}x · ${AUDIO_NAME[L.audio]}`; }
+  $('#play').textContent = (S.real ? !vid.paused : S.playing) ? '❚❚ Pause' : '▶ Play';
+  $('#fsPlay').textContent = (S.real ? !vid.paused : S.playing) ? '❚❚' : '▶';
+  updateButtons();
+  requestAnimationFrame(tickFrame);
+}
+
+$('#tin').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    const t = parseTime($('#tin').value);
+    if (t !== null) seek(t);
+    $('#tin').blur();
+    e.preventDefault();
+  } else if (e.key === 'Escape') {
+    $('#tin').value = fmt(S.T);
+    $('#tin').blur();
+    e.stopPropagation();
+  }
+});
+$('#tin').addEventListener('blur', () => { $('#tin').value = fmt(S.T); });
+
+function tAt(clientX) {
+  const wrap = $('#wrap'), r = wrap.getBoundingClientRect();
+  return (clientX - r.left + wrap.scrollLeft - LABEL) / S.pxPerSec;
+}
+
+// ---------- provisional cursor with preview ----------
+// The preview frame has the same size as the video screen.
+function sizePreview() {
+  const sc = $('#screen').getBoundingClientRect();
+  const c = $('#pcan');
+  // same aspect ratio as the video: in portrait it fills the screen height, without stretching
+  if (VID_ASPECT < 1) { c.height = Math.round(sc.height); c.width = Math.round(sc.height * VID_ASPECT); }
+  else { c.width = Math.round(sc.width); c.height = Math.round(sc.width / VID_ASPECT); }
+}
+function showScrub() {
+  const t = S.scrubT;
+  $('#tmpc').style.display = 'block';
+  $('#tmpc').style.left = (LABEL + t * S.pxPerSec) + 'px';
+  sizePreview();
+  const wr = $('#wrap').getBoundingClientRect(), c = $('#pcan');
+  const box = $('#scrubbox');
+  box.style.display = 'block';
+  // fixed to the right of the video frame, aligned to its top
+  const sr = $('#screen').getBoundingClientRect();
+  box.style.left = Math.max(8, Math.min(sr.right + 14, window.innerWidth - c.width - 30)) + 'px';
+  box.style.top = Math.max(8, sr.top) + 'px';
+  $('#pcap').textContent = `original ${fmt(t)} · final ${fmt(outAt(t))} · frame ${Math.round(t * FPS)}`;
+  if (S.real) pvid.currentTime = t;
+  else drawPlaceholderFrame(t);
+}
+function hideScrub() {
+  $('#tmpc').style.display = 'none';
+  $('#scrubbox').style.display = 'none';
+}
+function drawPlaceholderFrame(t) {
+  const c = $('#pcan'), ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, c.width, c.height);
+  g.addColorStop(0, '#2b3a55'); g.addColorStop(1, '#0c0f14');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#cfd6e4'; ctx.font = '14px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText('simulated frame', c.width / 2, c.height / 2);
+}
+pvid.onseeked = () => {
+  if (((S.scrub && S.scrub.moved) || S.kbT != null) && S.real) { const c = $('#pcan'); c.getContext('2d').drawImage(pvid, 0, 0, c.width, c.height); }
+};
+
+// ---------- pointer ----------
+$('#inner').addEventListener('pointerdown', e => {
+  if (e.target.closest('button, select, input, .pop, #hcell, #ahead, #grip')) return;
+  if (S.kbT != null) clearKbCursor();
+  const b = e.target.closest('#lanes .blk');
+  if (b) {
+    const p = findPiece(b.dataset.key); if (!p) return;
+    const r = b.getBoundingClientRect();
+    let mode = 'move';
+    if (e.clientX - r.left < 8) mode = 'l';
+    else if (r.right - e.clientX < 8) mode = 'r';
+    const group = (mode === 'move' && S.msel.length > 1 && S.msel.includes(p.id)) ? [...S.msel] : null;
+    S.drag = { key: p.id, mode, x0: e.clientX, y0: e.clientY, moved: false, group, delta: 0,
+               ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey,
+               start: p.start, end: p.end, level: p.level, id: p.id, ns: p.start, ne: p.end };
+    e.preventDefault();
+    return;
+  }
+  const flag = e.target.closest('.flag');
+  S.scrub = { x0: e.clientX, y0: e.clientY, moved: false, flagT: flag ? parseFloat(flag.dataset.t) : null };
+  S.scrubT = tAt(e.clientX);
+  e.preventDefault();
+});
+
+window.addEventListener('pointermove', e => {
+  if (S.rz) {
+    const w = clamp(S.rz.w0 + (e.clientX - S.rz.x0), 200, 900);
+    const sc = $('#screen'); sc.style.width = w + 'px'; sc.style.height = (w * 9 / 16) + 'px';
+    return;
+  }
+  if (S.scrub) {
+    const s = S.scrub;
+    if (!s.moved && Math.hypot(e.clientX - s.x0, e.clientY - s.y0) > 3) s.moved = true;
+    if (s.moved) { S.scrubT = snapT(clamp(tAt(e.clientX), 0, D)); showScrub(); }
+    return;
+  }
+  const d = S.drag; if (!d) return;
+  if (Math.abs(e.clientX - d.x0) > 3 || Math.abs(e.clientY - d.y0) > 3) d.moved = true;
+  const dx = (e.clientX - d.x0) / S.pxPerSec;
+  if (d.mode === 'l') d.ns = Math.max(0, Math.min(d.end - 0.1, snap(d.start + dx)));
+  if (d.mode === 'r') d.ne = Math.min(D, Math.max(d.start + 0.1, snap(d.end + dx)));
+  if (d.mode === 'move') {
+    const row = [...document.querySelectorAll('#lanes .row[data-lane]')].find(r => {
+      const b = r.getBoundingClientRect(); return e.clientY >= b.top && e.clientY < b.bottom;
+    });
+    if (row) {
+      const start = laneIdx(d.level), cur = laneIdx(row.dataset.lane);
+      const levels = d.group
+        ? S.segments.filter(g => d.group.includes(g.id)).map(g => laneIdx(g.level))
+        : [start];
+      const minD = -Math.min(...levels), maxD = S.lanes.length - 1 - Math.max(...levels);
+      d.delta = clamp(cur - start, minD, maxD);
+    }
+  }
+  if (d.moved) render();
+});
+
+window.addEventListener('pointerup', e => {
+  if (S.rz) { S.rz = null; return; }
+  if (S.scrub) {
+    const s = S.scrub; S.scrub = null; hideScrub();
+    if (s.moved) {
+      // only changes the position if released within the height of the timeline (ruler down to the last level)
+      const top = $('#rwrap').getBoundingClientRect().top;
+      const bot = $('#lanes').getBoundingClientRect().bottom;
+      if (e.clientY >= top && e.clientY <= bot) seek(S.scrubT);
+    } else if (s.flagT !== null) seek(s.flagT);
+    else seek(tAt(e.clientX));
+    return;
+  }
+  const d = S.drag; if (!d) return; S.drag = null;
+  if (!d.moved) return selectClick(d);
+  if (d.mode === 'l' && d.id) { snapshot(); assign(d.ns, d.end, d.level, d.id); }
+  else if (d.mode === 'r' && d.id) { snapshot(); assign(d.start, d.ne, d.level, d.id); }
+  else if (d.mode === 'move') { snapshot(); dropMove(d); }
+  S.sel = null; S.msel = []; render();
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if ($('#modal').classList.contains('open')) return closeModal();
+  if (S.drag) { S.drag = null; render(); }
+  if (S.scrub) { S.scrub = null; hideScrub(); }
+  if (S.kbT != null) clearKbCursor();
+});
+
+// double-click on a cell: the cursor goes to the clicked point
+$('#lanes').addEventListener('dblclick', e => {
+  if (e.target.closest('select, button, input, .pop')) return;
+  const wr = $('#wrap').getBoundingClientRect();
+  if (e.clientX < wr.left + LABEL) return;   // name column
+  seek(tAt(e.clientX));
+});
+$('#rwrap').addEventListener('dblclick', e => {
+  const f = e.target.closest('.flag');
+  if (f) {
+    const t = parseFloat(f.dataset.t);
+    snapshot(); S.marks = S.marks.filter(m => m.t !== t); return render();
+  }
+  addMarkerAt(tAt(e.clientX));
+});
+
+$('#lanes').addEventListener('click', e => {
+  const sp = e.target.closest('button[data-sp]');
+  if (sp) return createLaneAfter(parseFloat(sp.dataset.sp), sp.dataset.after);
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const act = btn.dataset.act;
+  if (act === 'addcustom') {
+    const v = parseFloat($('#custSp').value);
+    if (!(v >= 0.05 && v <= 16)) return status('Enter a speed between 0.05 and 16.');
+    return createLaneAfter(v, btn.dataset.after);
+  }
+  const row = btn.closest('.row');
+  if (act === 'addafter') S.addFor = S.addFor === row.dataset.lane ? null : row.dataset.lane;
+  if (act === 'edit') S.editLane = S.editLane === row.dataset.lane ? null : row.dataset.lane;
+  if (act === 'del') {
+    snapshot();
+    S.lanes = S.lanes.filter(l => l.id !== row.dataset.lane);
+    S.segments = S.segments.filter(g => g.level !== row.dataset.lane);
+    S.editLane = null; S.sel = null; S.msel = [];
+    status('Level deleted. Use Undo to restore it.');
+  }
+  render();
+});
+$('#lanes').addEventListener('change', e => {
+  const act = e.target.dataset.act, row = e.target.closest('.row');
+  if (act && row && row.dataset.lane) {
+    const L = lane(row.dataset.lane); snapshot();
+    if (act === 'speed') { L.speed = parseFloat(e.target.value); sortLanes(); }
+    else if (act === 'vol') L.vol = parseFloat(e.target.value);
+    else L.audio = e.target.value;
+    return render();
+  }
+  if (e.target.classList.contains('bsp')) {
+    const p = findPiece(e.target.closest('.blk').dataset.key); if (!p) return;
+    snapshot();
+    const v = e.target.value, tgt = v === 'ign' ? 'ign' : levelForSpeed(parseFloat(v));
+    assign(p.start, p.end, tgt, p.id);
+    S.sel = null; S.msel = []; render();
+  }
+});
+document.addEventListener('click', e => {
+  let changed = false;
+  if (S.editLane && !e.target.closest('.pop') && !e.target.closest('[data-act="edit"]')) { S.editLane = null; changed = true; }
+  if (S.addFor && !e.target.closest('.pop') && !e.target.closest('[data-act="addafter"]')) { S.addFor = null; changed = true; }
+  if (changed) render();
+});
+
+$('#ahead').addEventListener('click', e => {
+  const act = e.target.dataset.act;
+  if (act === 'audio') { S.audioOpen = !S.audioOpen; render(); }
+  if (act === 'speech1x') markSpeechAs1x();
+  if (act === 'speechMark') markSpeechStarts();
+  if (act === 'gainAuto') {   // scale so the video peak reaches 1 (at most 20x)
+    const peak = Math.max(0, ...AUD);
+    S.gain = peak > 0 ? Math.min(20, 1 / peak) : 1;
+    render();
+  }
+});
+$('#ahead').addEventListener('input', e => {
+  if (e.target.dataset.act === 'gain') {
+    S.gain = parseFloat(e.target.value);
+    const g = document.getElementById('gv'); if (g) g.textContent = S.gain.toFixed(1);
+    drawWave(widthPx());
+    return;
+  }
+  if (e.target.dataset.act !== 'threshold') return;
+  S.threshold = parseFloat(e.target.value);
+  const lbl = document.getElementById('thv'); if (lbl) lbl.textContent = S.threshold.toFixed(2);
+  drawWave(widthPx());
+});
+
+$('#fs').onclick = () => {
+  const sc = $('#screen');
+  sc.classList.toggle('fsmode');
+  $('#fs').textContent = sc.classList.contains('fsmode') ? '✕ exit' : '⛶';
+};
+$('#grip').addEventListener('pointerdown', e => {
+  S.rz = { x0: e.clientX, w0: $('#screen').offsetWidth };
+  e.preventDefault();
+});
+
+const HELP = {
+  about: `<h2>Time-lapse editor</h2>
+    <p>Editor for creating time-lapses with different speeds in each part of the video, as a timeline of levels.</p>
+    <p class="muted">Version v0.3. Uses <b>timelapse_editor.py</b> with ffmpeg. Without a loaded video, the interface shows simulated data for testing.</p>
+    <h3>How the timeline works</h3>
+    <ul>
+      <li><b>Ruler (original):</b> video time as it was recorded.</li>
+      <li><b>Final line:</b> time each segment will have in the exported video, with the same divisions as the cells.</li>
+      <li><b>Levels:</b> each level has a speed. Level 1x is the default for what was not edited, and works like the other levels.</li>
+      <li><b>Ignored:</b> removed segments, which are not included in the export or in the final time.</li>
+    </ul>
+    <h3>When you open a video</h3>
+    <p>The whole video starts at 1x, with original audio, split into three segments (cuts at 1/3 and 2/3).</p>`,
+  tutorial: `<h2>Quick tutorial</h2>
+    <ol>
+      <li><b>Import:</b> click <b>Import</b>, browse the folders on the computer and click the video. Without a video, the interface uses a simulated time of 2 minutes.</li>
+      <li><b>Place the cursor:</b> click the ruler, drag the provisional cursor or type the time (e.g. <kbd>1:05.5</kbd>) and press <kbd>Enter</kbd>.</li>
+      <li><b>Keyboard:</b> <kbd>←</kbd> and <kbd>→</kbd> move one frame (or the chosen step). <kbd>Ctrl</kbd>+<kbd>←</kbd>/<kbd>→</kbd> move the provisional cursor 10 frames; with <kbd>Shift</kbd>, 1 frame. <kbd>Enter</kbd> moves the cursor there and <kbd>Esc</kbd> cancels.</li>
+      <li><b>Play and Stop:</b> <kbd>P</kbd> or <kbd>space</kbd> toggle Play and Pause. <b>Stop</b> pauses and goes back to the start.</li>
+      <li><b>Create a level:</b> use the <b>+</b> on the first level (1x) and choose the speed. Levels sort themselves.</li>
+      <li><b>Move a segment to another level:</b> drag the bar up or down. To change the start or end, drag the edge.</li>
+      <li><b>Cut:</b> place the cursor inside the segment and click <b>Cut at cursor</b>. Then drag the part you want to another level.</li>
+      <li><b>Select several segments:</b> <kbd>Ctrl</kbd> + click adds or removes a segment. <kbd>Shift</kbd> + click selects the range between the last marked segment and the clicked one.</li>
+      <li><b>Merge segments:</b> if the selection is of adjacent segments on the same level, the <b>Confirm merge</b> button appears.</li>
+      <li><b>Audio:</b> the ✎ panel of each level sets the audio (mute, original or corrected) and the volume. In <b>Audio · intensity</b>, adjust the speech threshold and mark the segments with speech.</li>
+      <li><b>Markers:</b> double-click the ruler or the final line to create a marker. Double-click a marker to remove it.</li>
+      <li><b>Preview:</b> <b>Play selected segment</b> plays only that segment, without changing the edit.</li>
+      <li><b>Cancel a drag:</b> press <kbd>Esc</kbd> before releasing the mouse.</li>
+      <li><b>Save:</b> <b>💾</b> opens the save window with the name <i>timelapse_NAME.json</i> (NAME = video name).</li>
+      <li><b>Export:</b> in <b>Export video</b>, choose the format (MP4 H.264, MP4 H.265 or MOV). The panel shows the estimated size, how many seconds of the video are included and the final duration. The bar shows the progress.</li>
+    </ol>`
+};
+function openModal(tab) { $('#modal').classList.add('open'); showTab(tab || 'about'); }
+function closeModal() { $('#modal').classList.remove('open'); }
+function showTab(tab) {
+  $('#mcontent').innerHTML = HELP[tab];
+  document.querySelectorAll('.mtabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+}
+$('#helpBtn').onclick = () => openModal('about');
+$('#mclose').onclick = closeModal;
+document.querySelectorAll('.mtabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+
+// Import: window with the folders of the computer where the program runs (no need to type the path)
+async function browse(path) {
+  let j;
+  try { j = await (await fetch('/api/browse?path=' + encodeURIComponent(path || ''))).json(); }
+  catch (err) { return status('Error listing folders: ' + err); }
+  if (!j.ok) return status(j.msg);
+  $('#brPath').textContent = j.path;
+  BR_DIR = j.path;
+  const list = $('#brList'); list.innerHTML = '';
+  const line = (txt, action) => {
+    const b = document.createElement('button');
+    b.textContent = txt; b.style.cssText = 'display:block;width:100%;text-align:left';
+    if (action) b.onclick = action;
+    list.appendChild(b); return b;
+  };
+  if (j.parent) line('📁 ..', () => browse(j.parent));
+  j.dirs.forEach(d => line('📁 ' + d.name, () => browse(d.path)));
+  j.videos.forEach(v => {
+    const b = line('🎬 ' + v.name + '  ·  ' + fmtBytes(v.size), () => importVideo(v.path));
+    if (BR_MODE === 'save') { b.disabled = true; b.style.opacity = '.5'; }   // when saving, folders only
+  });
+  if (!j.dirs.length && !j.videos.length) {   // the message goes below ".." (which stays available)
+    const m = document.createElement('small'); m.className = 'hint'; m.textContent = 'No video in this folder.';
+    list.appendChild(m);
+  }
+}
+async function importVideo(path) {
+  status('Loading video…');
+  try {
+    const r = await fetch('/api/load', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ path }) });
+    const j = await r.json();
+    if (!j.ok) return status(j.msg);
+    $('#browser').style.display = 'none';
+    startWithVideo(j.info);
+    if (PENDING_PROJECT) {   // project that was waiting for this video
+      const d = PENDING_PROJECT; PENDING_PROJECT = null;
+      applyProject(d);
+      status('Project opened with the video ' + j.info.name + '.');
+      return;
+    }
+    status('Video loaded: ' + j.info.name);
+  } catch (err) { status('Error loading the video: ' + err); }
+}
+$('#loadBtn').onclick = () => {
+  setBrowseMode('import');
+  $('#browser').style.display = 'flex'; browse('');
+};
+$('#brCancel').onclick = () => { $('#browser').style.display = 'none'; };
+
+// folder window: 'import' mode (choose a video) or 'save' mode (choose a folder for the frame)
+let BR_MODE = 'import', BR_DIR = '', FRAME_PENDING = null;
+function setBrowseMode(mode) {
+  BR_MODE = mode;
+  $('#brTitle').textContent = 'Import video';
+  $('#saveRow').style.display = mode === 'save' ? 'flex' : 'none';
+}
+function openSaveFrame(frame) {
+  setBrowseMode('save');
+  FRAME_PENDING = frame;
+  $('#brTitle').textContent = 'Save frame ' + frame + ' — choose the folder';
+  $('#browser').style.display = 'flex'; browse('');   // starts in the video's folder
+}
+$('#frameBtn').onclick = () => {
+  if (!S.real) return status('Exporting a frame needs a video loaded in the program.');
+  const t = S.kbT != null ? S.kbT : S.T;   // provisional cursor, if active
+  openSaveFrame(Math.round(t * FPS));
+};
+function updateFrameQuality() {
+  const jpg = $('#frameFmt').value === 'jpg';
+  $('#frameQ').disabled = !jpg; $('#frameQ').style.opacity = jpg ? '1' : '0.35';
+  $('#frameQlbl').style.opacity = jpg ? '1' : '0.35';
+}
+$('#frameFmt').onchange = updateFrameQuality;
+$('#frameQ').oninput = e => { $('#frameQv').textContent = e.target.value; };
+updateFrameQuality();
+$('#brSave').onclick = async () => {
+  if (FRAME_PENDING == null) return;
+  status('Saving frame…');
+  try {
+    const r = await fetch('/api/frame', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frame: FRAME_PENDING, format: $('#frameFmt').value,
+                             quality: parseInt($('#frameQ').value, 10), folder: BR_DIR }) });
+    const j = await r.json();
+    status(j.msg);
+    if (j.ok) { $('#browser').style.display = 'none'; FRAME_PENDING = null; }
+  } catch (err) { status('Error saving the frame: ' + err); }
+};
+
+// volume and mute
+const SPK_ON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+const SPK_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+function updateVolUI() {
+  $('#mute').innerHTML = GLOBAL_MUTE ? SPK_OFF : SPK_ON;
+  $('#vol').disabled = GLOBAL_MUTE;
+  $('#vol').style.opacity = GLOBAL_MUTE ? '0.35' : '1';
+}
+$('#vol').oninput = e => { GLOBAL_VOL = parseFloat(e.target.value); };
+$('#mute').onclick = () => { GLOBAL_MUTE = !GLOBAL_MUTE; updateVolUI(); };
+updateVolUI();
+
+// frame stepping: buttons and arrows
+function stepFrames(n) { seek((Math.round(S.T * FPS) + n) / FPS); }
+const stepN = () => parseInt($('#stepN').value, 10) || 1;
+$('#stepL').onclick = () => stepFrames(-stepN());
+$('#stepR').onclick = () => stepFrames(stepN());
+// Keyboard provisional cursor: Ctrl+arrows = 10 frames; Ctrl+Shift+arrows = 1 frame.
+// Enter moves the main cursor to it; Esc cancels. Arrows without Ctrl return to the main cursor.
+function moveKbCursor(n) {
+  const base = S.kbT != null ? S.kbT : S.T;
+  S.kbT = clamp((Math.round(base * FPS) + n) / FPS, 0, D);
+  S.scrubT = S.kbT; showScrub();
+}
+function clearKbCursor() { S.kbT = null; hideScrub(); }
+window.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const dir = e.key === 'ArrowLeft' ? -1 : 1;
+      moveKbCursor(dir * (e.shiftKey ? 1 : 10));
+    }
+    return;
+  }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (S.kbT != null) clearKbCursor();
+    stepFrames((e.key === 'ArrowLeft' ? -1 : 1) * stepN());
+  }
+  if (e.key === ' ' || e.key.toLowerCase() === 'p') {   // P and space: play/pause
+    e.preventDefault();
+    if (e.target.tagName === 'BUTTON') e.target.blur();
+    $('#play').click();
+  }
+  if (e.key === 'Enter' && S.kbT != null) {
+    e.preventDefault();   // avoids triggering the button that has focus (e.g. Play)
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    seek(S.kbT); clearKbCursor();
+  }
+});
+
+// full screen: pause and resume
+$('#fsPlay').onclick = () => $('#play').click();
+
+$('#file').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  vid.onloadedmetadata = () => {
+    S.real = true; $('#screen').classList.add('real');
+    VID_ASPECT = vid.videoWidth / vid.videoHeight || 16 / 9;
+    D = vid.duration; genAudio(); reset(); S.T = 0;
+    S.pxPerSec = Math.max(3, ($('#wrap').clientWidth - LABEL - 30) / D);
+    $('#fname').textContent = f.name; VIDEO_NAME = f.name;
+    render(); status('Video loaded. The audio bar is still simulated in this mockup.');
+  };
+  vid.src = URL.createObjectURL(f);
+};
+$('#openBtn').onclick = () => $('#pfile').click();
+
+// Project file format. Version 2 uses English keys: segments, lanes, marks, threshold, video.
+// Version 1 (no "version" field) used Portuguese keys and audio values; it is converted on open.
+const OLD_AUDIO = { mudo: 'mute', corrigido: 'corrected', original: 'original' };
+function migrateProject(data) {
+  if (data.version === 2) return data;
+  return {
+    version: 2,
+    duration: data.duration,
+    segments: data.segments || data.segs || [],
+    lanes: (data.lanes || []).map(l => ({ ...l, audio: OLD_AUDIO[l.audio] || l.audio })),
+    marks: data.marks || [],
+    threshold: data.threshold ?? data.th ?? 0.4,
+    video: data.video || {},
+  };
+}
+// applies the segments, levels, markers and threshold of a saved project
+function applyProject(raw) {
+  const data = migrateProject(raw);
+  S.segments = data.segments; S.lanes = data.lanes.length ? data.lanes : S.lanes;
+  S.marks = data.marks; S.threshold = data.threshold;
+  S.sel = null; S.msel = []; S.hist = []; S.anchor = null; S.editLane = null; S.addFor = null;
+  render();
+}
+$('#pfile').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  let data;
+  try { data = migrateProject(JSON.parse(await f.text())); }
+  catch (err) { e.target.value = ''; return status('Could not open the project: invalid file.'); }
+  e.target.value = '';
+  const v = data.video || {};
+  // 1) try to open the video by the path saved in the project
+  if (v.path) {
+    status('Loading the project video…');
+    try {
+      const r = await fetch('/api/load', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                           body: JSON.stringify({ path: v.path }) });
+      const j = await r.json();
+      if (j.ok) {
+        startWithVideo(j.info);
+        applyProject(data);
+        return status('Project opened: ' + f.name + ' (video: ' + j.info.name + ').');
+      }
+    } catch (err) { /* falls through to the case of a video not found */ }
+  }
+  // 2) video not found: shows the name and asks for a manual import
+  PENDING_PROJECT = data;
+  setBrowseMode('import');
+  $('#brTitle').textContent = 'Import the video: ' + (v.name || 'name not given in the project');
+  $('#browser').style.display = 'flex'; browse('');
+  status('The project video was not found. Import ' + (v.name || 'the file') + '.');
+};
+// name of the loaded video: base of the suggested project name (timelapse_NAME.json)
+let VIDEO_NAME = '';
+let VID_ASPECT = 16 / 9;   // video aspect ratio (width / height)
+let THUMB_V = 0;           // changes with each loaded video, so the browser does not reuse old thumbnails
+let VIDEO_PATH = null;     // path of the video on the computer (saved in the project)
+let PENDING_PROJECT = null; // open project whose video was not found; applied when the video is imported
+// Save opens the default save window, with the suggested name
+$('#saveBtn').onclick = async () => {
+  const name = 'timelapse_' + (VIDEO_NAME ? VIDEO_NAME.replace(/\.[^.]+$/, '') : 'project') + '.json';
+  const text = JSON.stringify({ version: 2, duration: D, segments: S.segments, lanes: S.lanes, marks: S.marks,
+    threshold: S.threshold, video: { name: VIDEO_NAME, path: VIDEO_PATH } }, null, 2);
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status('Project saved as ' + name + '.');
+  };
+  if (!window.showSaveFilePicker) return download();
+  try {
+    const h = await window.showSaveFilePicker({ suggestedName: name,
+      types: [{ description: 'Time-lapse project', accept: { 'application/json': ['.json'] } }] });
+    const w = await h.createWritable(); await w.write(text); await w.close();
+    status('Project saved as ' + h.name + '.');
+  } catch (err) {
+    if (err.name === 'AbortError') return;   // cancelled by the user
+    download();   // inside a cross-origin frame the browser blocks the window; downloads the file
+  }
+};
+// segments that enter the export (ignored ones are left out)
+function exportPieces() {
+  return timeline().filter(p => !lane(p.level).ignored)
+    .map(p => { const L = lane(p.level); return { start: p.start, end: p.end, speed: L.speed, audio: L.audio, volume: L.vol ?? 1 }; });
+}
+function fmtChoice() { const r = document.querySelector('input[name=fmt]:checked'); return r ? r.value : 'mp4_h264'; }
+function fmtBytes(b) { return b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
+// estimated size of each format, from a sample encoded by the program
+async function estimateSizes() {
+  const pieces = exportPieces();
+  if (!pieces.length) return $('#expnote').textContent = 'Nothing to export: all segments are ignored.';
+  if (!S.real) return $('#expnote').textContent = 'The size preview needs a video loaded.';
+  $('#expnote').textContent = 'Calculating sizes…';
+  for (const el of document.querySelectorAll('[data-size]')) {
+    el.textContent = '…';
+    try {
+      const r = await fetch('/api/estimate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pieces, format: el.dataset.size, quality: $('#expQ').value }) });
+      const j = await r.json();
+      el.textContent = j.ok ? '≈ ' + fmtBytes(j.bytes) : 'error';
+    } catch (err) { el.textContent = 'error'; }
+  }
+  $('#expnote').textContent = 'Estimate: encodes a sample of the first 4 s of output and scales by the total time.';
+  EST_KEY = estimateKey();
+}
+// coverage: how many seconds of the video are included in the export and what the final duration will be
+function coverageText(pieces) {
+  const covered = pieces.reduce((s, p) => s + (p.end - p.start), 0);
+  const final = pieces.reduce((s, p) => s + (p.end - p.start) / p.speed, 0);
+  return `Exported segments: ${covered.toFixed(1)} s of ${D.toFixed(1)} s of the video · final duration: ${final.toFixed(1)} s`;
+}
+// state of the panel buttons: before exporting, after finishing
+function exportReset() {
+  $('#expGo').style.display = ''; $('#expGo').disabled = false;
+  $('#expCancel').style.display = ''; $('#expClose').style.display = 'none';
+  $('#expprog').style.display = 'none';
+}
+function exportDone() {
+  $('#expGo').style.display = 'none'; $('#expCancel').style.display = 'none';
+  $('#expClose').style.display = '';
+}
+// the estimate is only recalculated when segments or quality changed since the last calculation
+let EST_KEY = null;
+function estimateKey() { return JSON.stringify(exportPieces()) + '|' + $('#expQ').value; }
+$('#exportBtn').onclick = () => {
+  const box = $('#expbox');
+  const isOpen = box.style.display !== 'none';
+  box.style.display = isOpen ? 'none' : 'flex';
+  if (!isOpen) {
+    exportReset();
+    $('#expcov').textContent = coverageText(exportPieces());
+    if (EST_KEY !== estimateKey()) estimateSizes();
+  }
+};
+$('#expCancel').onclick = () => { $('#expbox').style.display = 'none'; };
+$('#expClose').onclick = () => { $('#expbox').style.display = 'none'; };
+// changing the quality recalculates the estimate, only before exporting (not afterwards)
+$('#expQ').onchange = () => { if ($('#expGo').style.display !== 'none') estimateSizes(); };
+$('#expGo').onclick = async () => {
+  const pieces = exportPieces();
+  if (!pieces.length) return status('Nothing to export: all segments are ignored.');
+  if (!S.real) return status('Export needs a video loaded in the program.');
+  const go = $('#expGo');
+  const show = (f, msg) => {
+    $('#expprog').style.display = 'flex';
+    $('#expbar').style.width = Math.round(f * 100) + '%';
+    $('#exptxt').textContent = msg;
+  };
+  go.disabled = true;
+  show(0, 'Starting export…');
+  try {
+    const r = await fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pieces, format: fmtChoice(), quality: $('#expQ').value }) });
+    const j = await r.json();
+    if (!j.ok) { go.disabled = false; return show(0, j.msg); }
+    const timer = setInterval(async () => {
+      try {
+        const p = await (await fetch('/api/export/progress')).json();
+        show(p.frac, p.running ? `Exporting… ${Math.round(p.frac * 100)}%` : p.msg);
+        if (!p.running) { clearInterval(timer); exportDone(); status(p.msg); }
+      } catch (err) { clearInterval(timer); exportDone(); status('Error following the export: ' + err); }
+    }, 500);
+  } catch (err) { go.disabled = false; status('Communication error with the program: ' + err); }
+};
+
+// real video: comes from the server (python3 -m timelapse_editor file.MP4)
+function startWithVideo(info) {
+  // clears everything from the previous video: pause, preview switch handler, position and audio
+  vid.pause(); pvid.pause();
+  vid.onloadedmetadata = null;
+  AUD = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
+  if (S.kbT != null) S.kbT = null;
+  hideScrub();
+  FPS = info.fps; D = info.duration;
+  S.real = true;
+  $('#screen').classList.add('real');
+  vid.src = '/video';
+  pvid.src = '/video';
+  proxyUsed = false;
+  $('#fname').textContent = info.name; VIDEO_NAME = info.name;
+  VID_ASPECT = info.width && info.height ? info.width / info.height : 16 / 9;
+  THUMB_V = Date.now();
+  VIDEO_PATH = info.path || null;
+  reset();
+  S.pxPerSec = Math.max(3, ($('#wrap').clientWidth - LABEL - 30) / D);
+  render();
+  fetch('/api/audio').then(r => r.json()).then(a => {
+    if (a.levels && a.levels.length) {
+      AUD = a.levels;
+      // automatic scale on every loaded video: the audio peak reaches 1 (at most 20x)
+      const peak = Math.max(0, ...AUD);
+      S.gain = peak > 0 ? Math.min(20, 1 / peak) : 1;
+    }
+    render(); status('Ready. Audio intensity loaded.');
+  }).catch(() => status('Could not load the audio intensity.'));
+  watchProxy();
+}
+// When the preview proxy is ready, the preview switches to it without losing the position.
+// Export keeps using the original video.
+let proxyUsed = false;
+function watchProxy() {
+  const check = () => fetch('/api/info').then(r => r.json()).then(j => {
+    if (j.info && j.info.proxy_ready && !proxyUsed) {
+      proxyUsed = true;
+      const t = vid.currentTime || 0, playing = !vid.paused;
+      vid.onloadedmetadata = () => { vid.currentTime = t; if (playing) vid.play(); };
+      vid.src = '/video?proxy=1';
+      pvid.src = '/video?proxy=1';
+      status('Optimized preview ready (' + (j.info.proxy_encoder || 'CPU') + ').');
+    } else if (!proxyUsed) setTimeout(check, 2000);
+  }).catch(() => {});
+  check();
+}
+function startSimulated() {
+  reset();
+  S.pxPerSec = Math.max(3, ($('#wrap').clientWidth - LABEL - 30) / D);
+  render();
+}
+fetch('/api/info').then(r => r.json()).then(j => {
+  if (j.info) startWithVideo(j.info); else startSimulated();
+  requestAnimationFrame(tickFrame);
+}).catch(() => { startSimulated(); requestAnimationFrame(tickFrame); });
+$('#play').onclick = () => {
+  if (S.real) { vid.paused ? vid.play() : vid.pause(); return; }
+  if (S.T >= D) S.T = 0;
+  S.playing = !S.playing; S.last = 0;
+};
+// Stop: pauses and returns the cursor to the start
+$('#stop').onclick = () => {
+  S.previewing = false;
+  if (S.real) vid.pause(); else S.playing = false;
+  seek(0);
+};
+$('#prev').onclick = () => {
+  const p = S.sel && findPiece(S.sel); if (!p) return;
+  S.previewing = true; S.previewEnd = p.end;
+  seek(p.start);
+  if (S.real) vid.play(); else { S.playing = true; S.last = 0; }
+};
+$('#cut').onclick = cutAtPlayhead;
+$('#confirm').onclick = confirmMerge;
+$('#undo').onclick = undo;
+$('#addMark').onclick = () => addMarkerAt(S.T);
+$('#zm').onclick = () => zoom(1 / 1.5);
+$('#zp').onclick = () => zoom(1.5);
+$('#zf').onclick = () => {
+  const wrap = $('#wrap');
+  S.pxPerSec = Math.max(3, (wrap.clientWidth - LABEL - 30) / D);
+  render(); wrap.scrollLeft = 0;
+};
+function zoom(f) {
+  const wrap = $('#wrap');
+  const screenX = LABEL + S.T * S.pxPerSec - wrap.scrollLeft;
+  S.pxPerSec = Math.min(200, Math.max(3, S.pxPerSec * f));
+  render();
+  wrap.scrollLeft = Math.max(0, LABEL + S.T * S.pxPerSec - screenX);
+}
+
+</script>
+</body>
+</html>
