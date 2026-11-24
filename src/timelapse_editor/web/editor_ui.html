@@ -499,6 +499,9 @@ function render() {
   fill();
   sortLanes();
   const W = widthPx();
+  // the sticky label column can only stick inside its row/header, so those must be as wide as the scrolled content
+  const RW = LABEL + W;
+  $('#hdr').style.width = RW + 'px';
   const touch = touchingIds();
   const bounds = boundaries();
 
@@ -559,7 +562,7 @@ function render() {
   box.appendChild(bl);
 
   for (const L of S.lanes) {
-    const row = document.createElement('div'); row.className = 'row'; row.dataset.lane = L.id;
+    const row = document.createElement('div'); row.className = 'row'; row.dataset.lane = L.id; row.style.width = RW + 'px';
     const head = document.createElement('div'); head.className = 'head';
     if (L.ignored) head.innerHTML = '<b>Ignored</b><small>not included in the export</small>';
     else head.innerHTML = `<span><b>Level ${L.speed}x</b><br><small>${L.id === 'l1x' ? 'default · ' : ''}${AUDIO_NAME[L.audio]}</small></span>
