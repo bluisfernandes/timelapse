@@ -626,3 +626,41 @@ def test_motion_is_zero_while_still(tmp_path):
     assert max(levels[:15]) > 0.01          # first moving part
     assert all(v == 0 for v in levels[25:35])   # still part, away from the cuts
     assert max(levels[45:]) > 0.01          # moving again
+
+
+@requires_ffmpeg
+def test_analysis_cache_is_used_the_second_time(tmp_path, monkeypatch):
+    import timelapse_editor.analysis as an
+    clip = str(tmp_path / "clip.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", clip], check=True)
+    d = str(tmp_path / "entry")
+    os.makedirs(d)
+    first = an.analyze(clip, 2.0, d)
+    assert os.path.exists(os.path.join(d, "thumbs.done"))
+    # with the cache in place, no decode may run again
+    monkeypatch.setattr(an, "run_pass", lambda *a, **k: pytest.fail("the video was read again"))
+    assert an.analyze(clip, 2.0, d) == first
+
+
+@requires_ffmpeg
+def test_analysis_recomputes_when_the_series_version_changes(tmp_path, monkeypatch):
+    import timelapse_editor.analysis as an
+    clip = str(tmp_path / "clip.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", clip], check=True)
+    d = str(tmp_path / "entry")
+    os.makedirs(d)
+    an.write_store(d, {"motion": {"version": 0, "values": [9.9]}})
+    values = an.analyze(clip, 2.0, d, thumbs=False)
+    assert values[0] == 0.0 and max(values) < 1
+    assert an.read_store(d)["motion"]["version"] == an.SERIES_VERSION["motion"]
+
+
+def test_fingerprint_changes_with_the_file(tmp_path):
+    import timelapse_editor.analysis as an
+    f = tmp_path / "v.mp4"
+    f.write_bytes(b"abc")
+    before = an.fingerprint(str(f))
+    f.write_bytes(b"abcdef")
+    assert an.fingerprint(str(f)) != before

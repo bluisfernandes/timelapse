@@ -42,11 +42,13 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from . import analysis
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_FILE = os.path.join(HERE, "web", "editor_ui.html")
 
 SPEED_MIN, SPEED_MAX = 0.05, 16.0
-THUMB_FPS = 4  # thumbnails per second of video
+THUMB_FPS = analysis.THUMB_FPS  # thumbnails per second of video
 CRF_H264 = {"high": 18, "medium": 23, "compact": 28, "lossless": 0}
 CRF_H265 = {"high": 22, "medium": 26, "compact": 30, "lossless": 0}  # CRF 0: practically lossless (4:2:0), large file
 HEIGHT = {"original": None, "1080p": 1080, "720p": 720}
@@ -63,11 +65,11 @@ ENCODERS = [
     ("libx264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]),  # CPU, always
 ]
 
-STEP_MOTION = 0.1   # seconds per value of the audio and motion graphs
+STEP_MOTION = analysis.STEP   # seconds per value of the audio and motion graphs
 LOCK = threading.Lock()
 THUMB_LOCK = threading.Lock()
 STATE = {
-    "info": None, "cache": None, "audio": None, "audio_ready": threading.Event(),
+    "info": None, "cache": None, "tmp": None, "audio": None, "audio_ready": threading.Event(),
     "motion": None, "motion_ready": threading.Event(),
     "thumbs_ready": False, "proxy": None, "proxy_encoder": None,
 }
@@ -140,50 +142,18 @@ def compute_audio(path):
     return levels
 
 
-MOTION_W, MOTION_H = 160, 90   # small frames: enough to see movement, fast to read
-
-
-def media_pass(path, duration, cache=None):
-    """One decode for two things: the movement every 0.1 s (returned) and, when cache is given,
-    the thumbnails (THUMB_FPS per second). Decoding the video is the slow part, so it is done once.
-    Movement: frames 0.1 s apart, average luma difference (0 to 1). Still parts are 0.
-    ffmpeg gives each difference frame as gray; the average is taken here, frame by frame."""
-    motion = f"fps=10,scale={MOTION_W}:{MOTION_H},tblend=all_mode=difference,setpts=PTS-STARTPTS"
-    if cache:
-        fc = f"[0:v]split=2[mo][th];[th]fps={THUMB_FPS},scale=320:-2[tout];[mo]{motion}[mout]"
-        cmd = ["ffmpeg", "-v", "error", "-i", path, "-an", "-filter_complex", fc,
-               "-map", "[tout]", "-q:v", "4", os.path.join(cache, "t%06d.jpg"),
-               "-map", "[mout]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
-    else:
-        cmd = ["ffmpeg", "-v", "error", "-i", path, "-an", "-vf", motion,
-               "-f", "rawvideo", "-pix_fmt", "gray", "-"]
-    size = MOTION_W * MOTION_H
-    # the gray output keeps the limited luma range (16 to 235) stretched to 0-255: 219/255 undoes it
-    scale = (219 / 255) / 255 / size
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    n = int(duration / STEP_MOTION) + 1
-    levels = [0.0]   # the first output frame is the difference for 0.1 s, so frame i goes to step i + 1
-    while len(levels) < n:
-        frame = p.stdout.read(size)
-        if len(frame) < size:
-            break
-        levels.append(round(sum(frame) * scale, 4))
-    p.stdout.close()
-    p.wait()
-    return levels + [0.0] * (n - len(levels))
-
-
 def compute_motion(path, duration):
-    return media_pass(path, duration)
+    """Movement values only (used by the tests and the command line)."""
+    return analysis.run_pass(path, duration)[0]
 
 
 def _job_media(path, duration, cache):
-    """Thumbnails and movement from the same decode."""
-    levels = media_pass(path, duration, cache)
+    """Thumbnails and movement, from the cache when they are there, else from one decode."""
+    levels = analysis.analyze(path, duration, cache)
     with LOCK:
         if STATE["info"] and STATE["info"]["path"] == path:
             STATE["motion"] = levels
-            STATE["thumbs_ready"] = True
+            STATE["thumbs_ready"] = os.path.exists(os.path.join(cache, "thumbs.done"))
     STATE["motion_ready"].set()
 
 
@@ -207,7 +177,7 @@ def detect_encoder():
     return ENCODERS[-1]
 
 
-def _job_proxy(path, cache):
+def _job_proxy(path, tmp):
     """720p proxy for preview (the original is kept for export)."""
     def proxy_cmd(enc_args, out):
         return ["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "scale=-2:720",
@@ -215,7 +185,7 @@ def _job_proxy(path, cache):
                 "-movflags", "+faststart", out]
 
     name, args = detect_encoder()
-    out = os.path.join(cache, "proxy.mp4")
+    out = os.path.join(tmp, "proxy.mp4")
     r = subprocess.run(proxy_cmd(args, out), capture_output=True)
     if r.returncode != 0 and name != "libx264":
         # the encoder passed the test but failed on the video: fall back to the CPU
@@ -233,17 +203,17 @@ def load_video(raw):
         raise FileNotFoundError(f"file not found: {raw}")
     info = probe(path)
     with LOCK:
-        old = STATE["cache"]
-        STATE.update(info=info, cache=tempfile.mkdtemp(prefix="tle_"), audio=None, motion=None,
-                     thumbs_ready=False, proxy=None, proxy_encoder=None)
+        old_tmp = STATE["tmp"]
+        STATE.update(info=info, cache=analysis.entry_dir(info["path"]), tmp=tempfile.mkdtemp(prefix="tle_"),
+                     audio=None, motion=None, thumbs_ready=False, proxy=None, proxy_encoder=None)
         STATE["audio_ready"].clear()
         STATE["motion_ready"].clear()
-    if old:
-        shutil.rmtree(old, ignore_errors=True)
+    if old_tmp:
+        shutil.rmtree(old_tmp, ignore_errors=True)
     cache = STATE["cache"]
     threading.Thread(target=_job_audio, args=(info["path"], info["audio"]), daemon=True).start()
     threading.Thread(target=_job_media, args=(info["path"], info["duration"], cache), daemon=True).start()
-    threading.Thread(target=_job_proxy, args=(info["path"], cache), daemon=True).start()
+    threading.Thread(target=_job_proxy, args=(info["path"], STATE["tmp"]), daemon=True).start()
     return info
 
 
@@ -758,8 +728,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def cleanup():
-    if STATE.get("cache"):
-        shutil.rmtree(STATE["cache"], ignore_errors=True)
+    # the cache folder of the video is kept for the next time; only the temporary files go
+    if STATE.get("tmp"):
+        shutil.rmtree(STATE["tmp"], ignore_errors=True)
 
 
 def run_cli(args):
