@@ -241,6 +241,20 @@ def test_saved_project_keeps_the_graphs_choice(open_page):
     no_errors(errors)
 
 
+def test_scene_cut_marks_are_added_from_the_graphs_menu(open_page):
+    # the simulated video has cuts at 30 s and 60 s
+    page, errors = open_page(PORT_EMPTY)
+    wait_ready_sim = "() => typeof S !== 'undefined' && S.real === false && typeof SER !== 'undefined'"
+    page.wait_for_function(wait_ready_sim, timeout=60000)
+    page.click("#graphsBtn")
+    page.check('#graphMenu input[data-graph="brightness"]')
+    page.check('#graphMenu input[data-graph="cuts"]')
+    page.click('#graphrows button[data-act="cutmarks"]')
+    marks = state(page, "S.marks.map(m => m.t)")
+    assert 30 in marks and 60 in marks, marks
+    no_errors(errors)
+
+
 # ---------------------------------------------------------------- keyboard
 
 @requires_ffmpeg
