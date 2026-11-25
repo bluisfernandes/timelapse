@@ -17,13 +17,14 @@ import os
 import statistics
 import subprocess
 import tempfile
+import threading
 
 STEP = 0.1              # seconds per value of the graphs (the same step as the audio levels)
 THUMB_FPS = 4           # thumbnails per second of video
 W, H = 160, 90          # size of the frames used for the series: enough to see changes, fast to read
 
 # bump a version when the way a series is computed changes: old cached values are then ignored
-SERIES_VERSION = {"motion": 1, "brightness": 1, "sharpness": 1, "cuts": 1}
+SERIES_VERSION = {"motion": 1, "brightness": 1, "sharpness": 1, "cuts": 1, "camera": 1, "object": 1}
 SERIES = ("motion", "brightness", "sharpness")
 
 
@@ -57,11 +58,23 @@ def read_store(d):
         return {}
 
 
+STORE_LOCK = threading.Lock()
+
+
 def write_store(d, store):
     tmp = os.path.join(d, "series.json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(store, f)
     os.replace(tmp, os.path.join(d, "series.json"))
+
+
+def update_store(d, updates):
+    """Adds or replaces entries of the store. Two jobs may write at the same time: they take turns."""
+    with STORE_LOCK:
+        store = read_store(d)
+        store.update(updates)
+        write_store(d, store)
+        return store
 
 
 def _filter_graph(thumbs):
@@ -152,10 +165,9 @@ def analyze(path, duration, d, thumbs=True):
     need_thumbs = thumbs and not os.path.exists(thumbs_done)
     if not current or need_thumbs:
         series, ok = run_pass(path, duration, d if need_thumbs else None)
-        for k in SERIES:
-            store[k] = {"version": SERIES_VERSION[k], "values": series[k]}
-        store["cuts"] = {"version": SERIES_VERSION["cuts"], "values": detect_cuts(series["motion"])}
-        write_store(d, store)
+        updates = {k: {"version": SERIES_VERSION[k], "values": series[k]} for k in SERIES}
+        updates["cuts"] = {"version": SERIES_VERSION["cuts"], "values": detect_cuts(series["motion"])}
+        store = update_store(d, updates)
         if need_thumbs and ok:
             open(thumbs_done, "w").close()
     return store
