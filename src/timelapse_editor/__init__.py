@@ -63,10 +63,12 @@ ENCODERS = [
     ("libx264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]),  # CPU, always
 ]
 
+STEP_MOTION = 0.1   # seconds per value of the audio and motion graphs
 LOCK = threading.Lock()
 THUMB_LOCK = threading.Lock()
 STATE = {
     "info": None, "cache": None, "audio": None, "audio_ready": threading.Event(),
+    "motion": None, "motion_ready": threading.Event(),
     "thumbs_ready": False, "proxy": None, "proxy_encoder": None,
 }
 
@@ -138,24 +140,59 @@ def compute_audio(path):
     return levels
 
 
+MOTION_W, MOTION_H = 160, 90   # small frames: enough to see movement, fast to read
+
+
+def media_pass(path, duration, cache=None):
+    """One decode for two things: the movement every 0.1 s (returned) and, when cache is given,
+    the thumbnails (THUMB_FPS per second). Decoding the video is the slow part, so it is done once.
+    Movement: frames 0.1 s apart, average luma difference (0 to 1). Still parts are 0.
+    ffmpeg gives each difference frame as gray; the average is taken here, frame by frame."""
+    motion = f"fps=10,scale={MOTION_W}:{MOTION_H},tblend=all_mode=difference,setpts=PTS-STARTPTS"
+    if cache:
+        fc = f"[0:v]split=2[mo][th];[th]fps={THUMB_FPS},scale=320:-2[tout];[mo]{motion}[mout]"
+        cmd = ["ffmpeg", "-v", "error", "-i", path, "-an", "-filter_complex", fc,
+               "-map", "[tout]", "-q:v", "4", os.path.join(cache, "t%06d.jpg"),
+               "-map", "[mout]", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+    else:
+        cmd = ["ffmpeg", "-v", "error", "-i", path, "-an", "-vf", motion,
+               "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+    size = MOTION_W * MOTION_H
+    # the gray output keeps the limited luma range (16 to 235) stretched to 0-255: 219/255 undoes it
+    scale = (219 / 255) / 255 / size
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    n = int(duration / STEP_MOTION) + 1
+    levels = [0.0]   # the first output frame is the difference for 0.1 s, so frame i goes to step i + 1
+    while len(levels) < n:
+        frame = p.stdout.read(size)
+        if len(frame) < size:
+            break
+        levels.append(round(sum(frame) * scale, 4))
+    p.stdout.close()
+    p.wait()
+    return levels + [0.0] * (n - len(levels))
+
+
+def compute_motion(path, duration):
+    return media_pass(path, duration)
+
+
+def _job_media(path, duration, cache):
+    """Thumbnails and movement from the same decode."""
+    levels = media_pass(path, duration, cache)
+    with LOCK:
+        if STATE["info"] and STATE["info"]["path"] == path:
+            STATE["motion"] = levels
+            STATE["thumbs_ready"] = True
+    STATE["motion_ready"].set()
+
+
 def _job_audio(path, has_audio):
     levels = compute_audio(path) if has_audio else []
     with LOCK:
         if STATE["info"] and STATE["info"]["path"] == path:
             STATE["audio"] = levels
     STATE["audio_ready"].set()
-
-
-def _job_thumbs(path, cache):
-    """Single pass: generates one thumbnail every 1/THUMB_FPS seconds."""
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path,
-         "-vf", f"fps={THUMB_FPS},scale=320:-2", "-q:v", "4",
-         os.path.join(cache, "t%06d.jpg")],
-        capture_output=True)
-    with LOCK:
-        if STATE["info"] and STATE["info"]["path"] == path:
-            STATE["thumbs_ready"] = True
 
 
 def detect_encoder():
@@ -197,14 +234,15 @@ def load_video(raw):
     info = probe(path)
     with LOCK:
         old = STATE["cache"]
-        STATE.update(info=info, cache=tempfile.mkdtemp(prefix="tle_"), audio=None,
+        STATE.update(info=info, cache=tempfile.mkdtemp(prefix="tle_"), audio=None, motion=None,
                      thumbs_ready=False, proxy=None, proxy_encoder=None)
         STATE["audio_ready"].clear()
+        STATE["motion_ready"].clear()
     if old:
         shutil.rmtree(old, ignore_errors=True)
     cache = STATE["cache"]
     threading.Thread(target=_job_audio, args=(info["path"], info["audio"]), daemon=True).start()
-    threading.Thread(target=_job_thumbs, args=(info["path"], cache), daemon=True).start()
+    threading.Thread(target=_job_media, args=(info["path"], info["duration"], cache), daemon=True).start()
     threading.Thread(target=_job_proxy, args=(info["path"], cache), daemon=True).start()
     return info
 
@@ -644,6 +682,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/audio":
             STATE["audio_ready"].wait(timeout=600)
             return self._json({"levels": STATE["audio"] or []})
+        if u.path == "/api/motion":   # does not wait: the page asks again until it is ready
+            ready = STATE["motion_ready"].is_set()
+            return self._json({"ready": ready, "levels": (STATE["motion"] or []) if ready else []})
         if u.path == "/api/thumb":
             data = get_thumb(int(q.get("f", ["0"])[0]))
             if data:
@@ -769,6 +810,7 @@ def main():
               f"{info['fps']:.3f} fps · {info['frames']} frames")
     else:
         STATE["audio_ready"].set()
+        STATE["motion_ready"].set()
         print("No video: the interface opens in simulation mode. Use the Import button on screen to choose a video.")
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

@@ -606,3 +606,23 @@ def test_cli_accepts_resolution(clips, tmp_path):
     r = run_cli(clips["av"], "--segments", "0-end 1x", "--resolution", "720p", "--output", out)
     assert r.returncode == 0, r.stderr
     assert os.path.exists(out)
+
+
+@requires_ffmpeg
+def test_motion_is_zero_while_still(tmp_path):
+    # 2 s moving, 2 s of a flat colour (still), 2 s moving again. Values are every 0.1 s.
+    out = str(tmp_path / "motion.mp4")
+    cmd = [
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+        "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=30:duration=2",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+        "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", out]
+    subprocess.run(cmd, check=True)
+    info = te.probe(out)
+    levels = te.compute_motion(info["path"], info["duration"])
+    assert len(levels) >= int(info["duration"] / te.STEP_MOTION)
+    assert max(levels[:15]) > 0.01          # first moving part
+    assert all(v == 0 for v in levels[25:35])   # still part, away from the cuts
+    assert max(levels[45:]) > 0.01          # moving again

@@ -57,6 +57,7 @@
   #ahead button { font-size:12px; padding:3px 6px; align-self:flex-start; }
   #ahead input[type=range] { width:150px; }
   #wave { display:block; }
+  #mhead { width:190px; flex:0 0 190px; position:sticky; left:0; z-index:5; background:var(--panel); border-right:1px solid var(--line); padding:4px 8px; display:flex; flex-direction:column; justify-content:center; gap:3px; font-size:12px; }
 
   #lanes { position:relative; }
   .row { position:relative; display:flex; height:54px; border-bottom:1px solid var(--line); }
@@ -105,7 +106,7 @@
 <body>
 
 <div class="bar">
-  <b>Time-lapse editor</b> <span class="muted" id="ver">v0.3</span>
+  <b>Time-lapse editor</b> <span class="muted" id="ver">v0.4</span>
   <span class="spacer"></span>
   <button id="loadBtn" title="Import video">Import</button>
   <button id="openBtn" title="Open project">📂</button>
@@ -217,6 +218,11 @@
     <div id="wavewrap" style="position:relative"><div id="wavetiles" style="display:flex;height:44px"></div><div id="thline" style="position:absolute;left:0;right:0;top:0;height:0;border-top:1px dashed #ffd166aa;pointer-events:none"></div></div>
   </div>
 
+  <div class="audiorow">
+    <div id="mhead"><b>Movement</b><span class="hint"><i class="sw" style="background:#ffb454"></i>still = no bar</span></div>
+    <div id="motionwrap" style="position:relative"><div id="motiontiles" style="display:flex;height:44px"></div></div>
+  </div>
+
   <div id="lanes"></div>
   <div id="ph"></div>
   <div id="tmpc"></div>
@@ -266,6 +272,24 @@ function genAudio() {
   }
 }
 genAudio();
+
+let MOT = [];           // movement per 0.1 s, 0 = still (from /api/motion)
+let MOT_REF = 1;        // value shown at full height (95th percentile, so one jump does not flatten the rest)
+const STILL = [[15, 30], [50, 58], [80, 88]];   // simulated still parts, used without a real video
+function genMotion() {
+  MOT = []; seed = 11;
+  for (let i = 0; i < D / STEP; i++) {
+    const t = i * STEP;
+    MOT.push(STILL.some(([a, b]) => t >= a && t < b) ? 0 : 0.2 + 0.8 * rnd());
+  }
+  setMotionScale();
+}
+function setMotionScale() {
+  const sorted = MOT.filter(v => v > 0).sort((a, b) => a - b);
+  MOT_REF = sorted.length ? sorted[Math.floor(0.95 * (sorted.length - 1))] : 1;
+}
+function motAt(i) { return Math.min(1, MOT[i] / MOT_REF); }
+genMotion();
 
 const S = { pxPerSec: 12, segments: [], lanes: [], marks: [], sel: null, msel: [], anchor: null, hist: [], n: 1,
             drag: null, scrub: null, rz: null, T: 0, playing: false, threshold: 0.4, audioOpen: false,
@@ -538,6 +562,7 @@ function render() {
 
   $('#ahead').innerHTML = aheadHTML();
   drawWave(W);
+  drawMotion(W);
 
   const d = S.drag;
   const items = timeline().map(p => {
@@ -632,28 +657,46 @@ function blockEl(p, L, touch) {
 }
 
 const WAVE_H = 44;   // height of the audio track (without the empty area below the text)
+const MOT_H = 44;    // height of the movement track
 // browsers do not draw canvases wider than about 65 thousand pixels: the graph is split into parts
 const WAVE_TILE = 16000;
-function drawWave(W) {
-  const box = $('#wavetiles');
+// paint(ctx) draws in the coordinates of the whole graph; each part is shifted by its start
+function tiledCanvas(sel, W, H, paint) {
+  const box = $(sel);
   box.innerHTML = '';
   for (let x0 = 0; x0 < W; x0 += WAVE_TILE) {
     const w = Math.min(WAVE_TILE, W - x0);
     const c = document.createElement('canvas');
-    c.width = w; c.height = WAVE_H; c.style.width = w + 'px'; c.style.height = WAVE_H + 'px';
+    c.width = w; c.height = H; c.style.width = w + 'px'; c.style.height = H + 'px';
     box.appendChild(c);
     const ctx = c.getContext('2d');
-    ctx.translate(-x0, 0);   // draws in the coordinates of the whole graph
+    ctx.translate(-x0, 0);
+    paint(ctx);
+  }
+}
+function drawWave(W) {
+  tiledCanvas('#wavetiles', W, WAVE_H, ctx => {
     for (const [a, b] of regions(S.threshold)) { ctx.fillStyle = '#3ec68a22'; ctx.fillRect(a * S.pxPerSec, 0, (b - a) * S.pxPerSec, WAVE_H); }
     AUD.forEach((_raw, i) => {
       const v = audAt(i);
       ctx.fillStyle = v >= S.threshold ? '#3ec68a' : '#5b6478';
       ctx.fillRect(i * STEP * S.pxPerSec, WAVE_H - v * (WAVE_H - 4), Math.max(1, STEP * S.pxPerSec - 1), v * (WAVE_H - 4));
     });
-  }
+  });
   // threshold line: separate element over the graph, to keep it sharp when zoomed in
   $('#thline').style.top = (WAVE_H - S.threshold * (WAVE_H - 4)) + 'px';
   $('#thline').style.width = W + 'px';
+}
+// movement: one bar per 0.1 s; still parts have no bar, so the key points stand out
+function drawMotion(W) {
+  tiledCanvas('#motiontiles', W, MOT_H, ctx => {
+    ctx.fillStyle = '#ffb454';
+    MOT.forEach((_raw, i) => {
+      const v = motAt(i);
+      if (v <= 0) return;
+      ctx.fillRect(i * STEP * S.pxPerSec, MOT_H - v * (MOT_H - 4), Math.max(1, STEP * S.pxPerSec - 1), v * (MOT_H - 4));
+    });
+  });
 }
 
 function updateButtons() {
@@ -975,7 +1018,7 @@ $('#grip').addEventListener('pointerdown', e => {
 const HELP = {
   about: `<h2>Time-lapse editor</h2>
     <p>Editor for creating time-lapses with different speeds in each part of the video, as a timeline of levels.</p>
-    <p class="muted">Version v0.3. Uses <b>timelapse_editor.py</b> with ffmpeg. Without a loaded video, the interface shows simulated data for testing.</p>
+    <p class="muted">Version v0.4. Uses <b>timelapse_editor.py</b> with ffmpeg. Without a loaded video, the interface shows simulated data for testing.</p>
     <h3>How the timeline works</h3>
     <ul>
       <li><b>Ruler (original):</b> video time as it was recorded.</li>
@@ -997,6 +1040,7 @@ const HELP = {
       <li><b>Select several segments:</b> <kbd>Ctrl</kbd> + click adds or removes a segment. <kbd>Shift</kbd> + click selects the range between the last marked segment and the clicked one.</li>
       <li><b>Merge segments:</b> if the selection is of adjacent segments on the same level, the <b>Confirm merge</b> button appears.</li>
       <li><b>Audio:</b> the ✎ panel of each level sets the audio (mute, original or corrected) and the volume. In <b>Audio · intensity</b>, adjust the speech threshold and mark the segments with speech.</li>
+      <li><b>Movement:</b> the orange graph under the audio shows how much the picture changes. Still parts have no bar, so the start and end of each action are easy to spot.</li>
       <li><b>Markers:</b> double-click the ruler or the final line to create a marker. Double-click a marker to remove it.</li>
       <li><b>Preview:</b> <b>Play selected segment</b> plays only that segment, without changing the edit.</li>
       <li><b>Cancel a drag:</b> press <kbd>Esc</kbd> before releasing the mouse.</li>
@@ -1164,10 +1208,10 @@ $('#file').onchange = e => {
   vid.onloadedmetadata = () => {
     S.real = true; $('#screen').classList.add('real');
     VID_ASPECT = vid.videoWidth / vid.videoHeight || 16 / 9;
-    D = vid.duration; genAudio(); reset(); S.T = 0;
+    D = vid.duration; genAudio(); genMotion(); reset(); S.T = 0;
     S.pxPerSec = Math.max(3, ($('#wrap').clientWidth - LABEL - 30) / D);
     $('#fname').textContent = f.name; VIDEO_NAME = f.name;
-    render(); status('Video loaded. The audio bar is still simulated in this mockup.');
+    render(); status('Video loaded. The audio and movement bars are still simulated in this mockup.');
   };
   vid.src = URL.createObjectURL(f);
 };
@@ -1342,7 +1386,7 @@ function startWithVideo(info) {
   // clears everything from the previous video: pause, preview switch handler, position and audio
   vid.pause(); pvid.pause();
   vid.onloadedmetadata = null;
-  AUD = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
+  AUD = []; MOT = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
   if (S.kbT != null) S.kbT = null;
   hideScrub();
   FPS = info.fps; D = info.duration;
@@ -1365,8 +1409,9 @@ function startWithVideo(info) {
       const peak = Math.max(0, ...AUD);
       S.gain = peak > 0 ? Math.min(20, 1 / peak) : 1;
     }
-    render(); status('Ready. Audio intensity loaded.');
+    render();   // the status is left to the movement graph, which is the last to finish
   }).catch(() => status('Could not load the audio intensity.'));
+  loadMotion();
   watchProxy();
 }
 // When the preview proxy is ready, the preview switches to it without losing the position.
@@ -1384,6 +1429,20 @@ function watchProxy() {
     } else if (!proxyUsed) setTimeout(check, 2000);
   }).catch(() => {});
   check();
+}
+// The movement graph takes a while on a long video: ask again until the server has it.
+// MOTION_TOKEN drops the answer of a video that was replaced in the meantime.
+let MOTION_TOKEN = 0;
+function loadMotion() {
+  const token = ++MOTION_TOKEN;
+  status('Calculating the movement graph…');
+  const ask = () => fetch('/api/motion').then(r => r.json()).then(m => {
+    if (token !== MOTION_TOKEN) return;
+    if (!m.ready) return setTimeout(ask, 2000);
+    MOT = m.levels || []; setMotionScale(); render();
+    status('Movement graph ready.');
+  }).catch(() => { if (token === MOTION_TOKEN) setTimeout(ask, 5000); });
+  ask();
 }
 function startSimulated() {
   reset();
