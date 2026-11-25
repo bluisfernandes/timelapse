@@ -189,7 +189,8 @@ def test_project_with_video_applies_the_segments(open_page, clips, tmp_path):
     file = tmp_path / "project_ok.json"
     file.write_text(json.dumps(project), encoding="utf-8")
     page.set_input_files("#pfile", str(file))
-    page.wait_for_timeout(1500)
+    # waits for the project to be applied (the video is loaded first): no fixed delay
+    page.wait_for_function("() => timeline().length === 2 && timeline()[0].level === 'l4'", timeout=60000)
     pieces = state(page, "timeline().map(p => [p.start, p.end, p.level])")
     assert len(pieces) == 2, pieces
     assert pieces[0][2] == "l4"
@@ -619,9 +620,14 @@ def test_jpg_frame_with_quality_and_no_overwrite(open_page, clips):
     page.click("#frameBtn")
     page.wait_for_selector("#browser", state="visible")
     page.click("#brSave")
-    page.wait_for_timeout(800)
     folder = os.path.dirname(clips["av"])
-    files = sorted(f for f in os.listdir(folder) if "_frame" in f and f.endswith(".jpg"))
+    # the server takes a while to write each frame: waits for both files, with a limit
+    deadline = time.time() + 60
+    while True:
+        files = sorted(f for f in os.listdir(folder) if "_frame" in f and f.endswith(".jpg"))
+        if len(files) >= 2 or time.time() > deadline:
+            break
+        page.wait_for_timeout(250)
     assert len(files) >= 2, files
     with open(os.path.join(folder, files[0]), "rb") as f:
         assert f.read(2) == b"\xff\xd8"
