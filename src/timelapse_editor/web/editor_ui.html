@@ -277,25 +277,27 @@ function genAudio() {
 }
 genAudio();
 
-let SER = { motion: [], brightness: [], sharpness: [] };   // values every 0.1 s (from /api/analysis)
-let SER_REF = { motion: 1, brightness: 1, sharpness: 1 };  // value shown at full height
+let SER = { motion: [], brightness: [], sharpness: [], camera: [], object: [] };   // values every 0.1 s (from /api/analysis, /api/camera)
+let SER_REF = { motion: 1, brightness: 1, sharpness: 1, camera: 1, object: 1 };  // value shown at full height
 let CUTS = [];          // times (s) of the scene cuts
 const STILL = [[15, 30], [50, 58], [80, 88]];   // simulated still parts, used without a real video
 function genSeries() {  // simulated values, used without a real video
   seed = 11;
-  SER = { motion: [], brightness: [], sharpness: [] };
+  SER = { motion: [], brightness: [], sharpness: [], camera: [], object: [] };
   for (let i = 0; i < D / STEP; i++) {
     const t = i * STEP, still = STILL.some(([a, b]) => t >= a && t < b);
     SER.motion.push(still ? 0 : 0.2 + 0.8 * rnd());
     SER.brightness.push(0.5 + 0.3 * Math.sin(t / 9) + 0.02 * rnd());
     SER.sharpness.push(still ? 0.05 : 0.15 + 0.1 * rnd());
+    SER.camera.push(still ? 0 : 3 + 2 * rnd());     // pixels per 0.1 s
+    SER.object.push(still ? 0.3 + rnd() : 0.1 * rnd());
   }
   CUTS = [30, 60].filter(t => t < D);
   setScales();
 }
 function setScales() {
   // movement and sharpness: relative, the 95th percentile reaches the top, so one peak does not flatten the rest
-  for (const id of ['motion', 'sharpness']) {
+  for (const id of ['motion', 'sharpness', 'camera', 'object']) {
     const sorted = SER[id].filter(v => v > 0).sort((a, b) => a - b);
     SER_REF[id] = sorted.length ? sorted[Math.floor(0.95 * (sorted.length - 1))] : 1;
   }
@@ -313,6 +315,8 @@ const GRAPHS = [
   { id: 'motion', label: 'Movement', color: '#ffb454', hint: 'still = no bar' },
   { id: 'brightness', label: 'Brightness', color: '#e7c33c', hint: 'black to white' },
   { id: 'sharpness', label: 'Sharpness', color: '#c678ff', hint: 'detail in the picture' },
+  { id: 'camera', label: 'Camera movement', color: '#4fd1c5', hint: 'whole picture moves' },
+  { id: 'object', label: 'Object movement', color: '#f6ad55', hint: 'moves inside the picture' },
   { id: 'cuts', label: 'Scene cuts', color: '#ff5a7a', hint: 'red line = cut' },
 ];
 
@@ -1043,6 +1047,9 @@ $('#graphMenu').addEventListener('change', e => {
   const id = e.target.dataset.graph;
   if (!id) return;
   S.graphs[id] = e.target.checked;
+  if (id === 'camera' || id === 'object') {
+    if (e.target.checked && S.real && !SER.camera.length) loadCamera(true);
+  }
   render();
 });
 document.addEventListener('click', e => {
@@ -1456,7 +1463,7 @@ function startWithVideo(info) {
   // clears everything from the previous video: pause, preview switch handler, position and audio
   vid.pause(); pvid.pause();
   vid.onloadedmetadata = null;
-  AUD = []; SER = { motion: [], brightness: [], sharpness: [] }; CUTS = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
+  AUD = []; SER = { motion: [], brightness: [], sharpness: [], camera: [], object: [] }; CUTS = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
   if (S.kbT != null) S.kbT = null;
   hideScrub();
   FPS = info.fps; D = info.duration;
@@ -1482,6 +1489,7 @@ function startWithVideo(info) {
     render();   // the status is left to the movement graph, which is the last to finish
   }).catch(() => status('Could not load the audio intensity.'));
   loadAnalysis();
+  loadCamera(false);   // already computed for this video? then it is shown at once
   watchProxy();
 }
 // When the preview proxy is ready, the preview switches to it without losing the position.
@@ -1500,6 +1508,27 @@ function watchProxy() {
   }).catch(() => {});
   check();
 }
+// Camera and object movement need OpenCV and one more pass over the video. They are asked for when
+// their graph is turned on, and the answer is kept in the cache of the video.
+let CAMERA_TOKEN = 0;
+function loadCamera(start) {
+  const token = ++CAMERA_TOKEN;
+  const ask = () => fetch('/api/camera' + (start ? '?start=1' : '')).then(r => r.json()).then(c => {
+    if (token !== CAMERA_TOKEN) return;
+    if (c.state === 'ready') {
+      SER = { ...SER, ...c.series };
+      setScales(); render();
+      if (start) status('Camera and object movement ready.');
+    } else if (c.state === 'computing') {
+      if (start) status('Calculating camera and object movement…');
+      setTimeout(ask, 2000);
+    } else if (c.state === 'unavailable' && start) {
+      S.graphs.camera = false; S.graphs.object = false; render();
+      status('Camera and object movement need OpenCV: run uv run --extra camera timelapse-editor …');
+    }
+  }).catch(() => { if (token === CAMERA_TOKEN) setTimeout(ask, 5000); });
+  ask();
+}
 // The graphs take a while on a long video: ask again until the server has them.
 // ANALYSIS_TOKEN drops the answer of a video that was replaced in the meantime.
 let ANALYSIS_TOKEN = 0;
@@ -1509,7 +1538,7 @@ function loadAnalysis() {
   const ask = () => fetch('/api/analysis').then(r => r.json()).then(a => {
     if (token !== ANALYSIS_TOKEN) return;
     if (!a.ready) return setTimeout(ask, 2000);
-    SER = { motion: [], brightness: [], sharpness: [], ...a.series };
+    SER = { ...SER, ...a.series };
     CUTS = a.cuts || [];
     setScales(); render();
     status('Graphs ready.');

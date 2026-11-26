@@ -255,6 +255,19 @@ def test_scene_cut_marks_are_added_from_the_graphs_menu(open_page):
     no_errors(errors)
 
 
+@requires_ffmpeg
+def test_camera_graph_is_computed_when_turned_on(open_page):
+    pytest.importorskip("cv2")
+    page, errors = open_page(PORT_VIDEO)
+    wait_ready(page)
+    page.click("#graphsBtn")
+    page.check('#graphMenu input[data-graph="camera"]')
+    page.wait_for_function("() => SER.camera && SER.camera.length > 0", timeout=240000)
+    assert page.locator("#tiles-camera").count() == 1
+    assert max(state(page, "SER.camera")) > 0
+    no_errors(errors)
+
+
 # ---------------------------------------------------------------- keyboard
 
 @requires_ffmpeg

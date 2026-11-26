@@ -70,7 +70,7 @@ LOCK = threading.Lock()
 THUMB_LOCK = threading.Lock()
 STATE = {
     "info": None, "cache": None, "tmp": None, "audio": None, "audio_ready": threading.Event(),
-    "results": None, "results_ready": threading.Event(),
+    "results": None, "results_ready": threading.Event(), "camera_jobs": set(),
     "thumbs_ready": False, "proxy": None, "proxy_encoder": None,
 }
 
@@ -157,6 +157,39 @@ def _job_media(path, duration, cache):
             STATE["results"] = results
             STATE["thumbs_ready"] = os.path.exists(os.path.join(cache, "thumbs.done"))
     STATE["results_ready"].set()
+
+
+def camera_status(start):
+    """Camera and object movement: needs OpenCV. Computed on request, in the background (one
+    more pass over the video) and kept in the cache, so the next time it is ready at once."""
+    from . import camera
+    with LOCK:
+        info, d = STATE["info"], STATE["cache"]
+    if not info:
+        return {"state": "none"}
+    if not camera.available():
+        return {"state": "unavailable"}
+    store = analysis.read_store(d)
+    if all(store.get(k, {}).get("version") == analysis.SERIES_VERSION[k] for k in ("camera", "object")):
+        return {"state": "ready", "series": {k: analysis.values_of(store, k) for k in ("camera", "object")}}
+    with LOCK:
+        if start and info["path"] not in STATE["camera_jobs"]:
+            STATE["camera_jobs"].add(info["path"])
+            threading.Thread(target=_job_camera, args=(info["path"], info["duration"], d), daemon=True).start()
+        running = info["path"] in STATE["camera_jobs"]
+    return {"state": "computing" if running else "idle"}
+
+
+def _job_camera(path, duration, d):
+    from . import camera
+    try:
+        cam_values, obj_values = camera.camera_pass(path, duration)
+        analysis.update_store(d, {
+            "camera": {"version": analysis.SERIES_VERSION["camera"], "values": cam_values},
+            "object": {"version": analysis.SERIES_VERSION["object"], "values": obj_values}})
+    finally:
+        with LOCK:
+            STATE["camera_jobs"].discard(path)
 
 
 def _job_audio(path, has_audio):
@@ -654,6 +687,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/audio":
             STATE["audio_ready"].wait(timeout=600)
             return self._json({"levels": STATE["audio"] or []})
+        if u.path == "/api/camera":
+            return self._json(camera_status(q.get("start", ["0"])[0] == "1"))
         if u.path == "/api/analysis":   # does not wait: the page asks again until it is ready
             res = STATE["results"] if STATE["results_ready"].is_set() else None
             return self._json({"ready": res is not None, **(res or {"series": {}, "cuts": []})})
