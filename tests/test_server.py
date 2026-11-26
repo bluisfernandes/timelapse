@@ -606,3 +606,103 @@ def test_cli_accepts_resolution(clips, tmp_path):
     r = run_cli(clips["av"], "--segments", "0-end 1x", "--resolution", "720p", "--output", out)
     assert r.returncode == 0, r.stderr
     assert os.path.exists(out)
+
+
+@requires_ffmpeg
+def test_motion_is_zero_while_still(tmp_path):
+    # 2 s moving, 2 s of a flat colour (still), 2 s moving again. Values are every 0.1 s.
+    out = str(tmp_path / "motion.mp4")
+    cmd = [
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+        "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=30:duration=2",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+        "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", out]
+    subprocess.run(cmd, check=True)
+    info = te.probe(out)
+    levels = te.compute_motion(info["path"], info["duration"])
+    assert len(levels) >= int(info["duration"] / te.STEP_MOTION)
+    assert max(levels[:15]) > 0.01          # first moving part
+    assert all(v == 0 for v in levels[25:35])   # still part, away from the cuts
+    assert max(levels[45:]) > 0.01          # moving again
+
+
+@requires_ffmpeg
+def test_analysis_cache_is_used_the_second_time(tmp_path, monkeypatch):
+    import timelapse_editor.analysis as an
+    clip = str(tmp_path / "clip.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", clip], check=True)
+    d = str(tmp_path / "entry")
+    os.makedirs(d)
+    first = an.analyze(clip, 2.0, d)
+    assert os.path.exists(os.path.join(d, "thumbs.done"))
+    # with the cache in place, no decode may run again
+    monkeypatch.setattr(an, "run_pass", lambda *a, **k: pytest.fail("the video was read again"))
+    assert an.analyze(clip, 2.0, d) == first
+
+
+@requires_ffmpeg
+def test_analysis_recomputes_when_the_series_version_changes(tmp_path, monkeypatch):
+    import timelapse_editor.analysis as an
+    clip = str(tmp_path / "clip.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", clip], check=True)
+    d = str(tmp_path / "entry")
+    os.makedirs(d)
+    an.write_store(d, {"motion": {"version": 0, "values": [9.9]}})
+    store = an.analyze(clip, 2.0, d, thumbs=False)
+    values = an.values_of(store, "motion")
+    assert values[0] == 0.0 and max(values) < 1
+    assert store["motion"]["version"] == an.SERIES_VERSION["motion"]
+    assert store["brightness"]["version"] == an.SERIES_VERSION["brightness"]
+
+
+def test_fingerprint_changes_with_the_file(tmp_path):
+    import timelapse_editor.analysis as an
+    f = tmp_path / "v.mp4"
+    f.write_bytes(b"abc")
+    before = an.fingerprint(str(f))
+    f.write_bytes(b"abcdef")
+    assert an.fingerprint(str(f)) != before
+
+
+def _make_clip(path, *parts):
+    """Concatenates the given lavfi sources, 2 s each, into one video."""
+    inputs, chains = [], []
+    for i, src in enumerate(parts):
+        inputs += ["-f", "lavfi", "-i", src]
+        chains.append(f"[{i}:v]trim=duration=2,setpts=PTS-STARTPTS[p{i}]")
+    fc = ";".join(chains) + ";" + "".join(f"[p{i}]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=1:a=0[v]"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", fc, "-map", "[v]",
+                    "-r", "30", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", path],
+                   check=True)
+    return path
+
+
+@requires_ffmpeg
+def test_brightness_and_sharpness_follow_the_picture(tmp_path):
+    clip = _make_clip(str(tmp_path / "scenes.mp4"),
+                      "color=c=gray:size=320x240:rate=30",          # flat mid grey: no detail
+                      "testsrc2=size=320x240:rate=30")               # full of detail
+    s, ok = te.analysis.run_pass(clip, 4.0)
+    assert ok
+    b, sh = s["brightness"], s["sharpness"]
+    assert abs(b[5] - 0.5) < 0.02                     # grey is in the middle of black and white
+    assert sh[5] < 0.001                              # flat: no detail
+    assert max(sh[25:35]) > 0.005                     # the detailed part has detail
+
+
+@requires_ffmpeg
+def test_scene_cuts_are_found_and_still_video_has_none(tmp_path):
+    cuts = _make_clip(str(tmp_path / "cuts.mp4"),
+                      "testsrc2=size=320x240:rate=30",
+                      "mandelbrot=size=320x240:rate=30",
+                      "color=c=gray:size=320x240:rate=30")
+    s, _ = te.analysis.run_pass(cuts, 6.0)
+    assert te.analysis.detect_cuts(s["motion"]) == [2.0, 4.0]
+    still = _make_clip(str(tmp_path / "still.mp4"), "testsrc2=size=320x240:rate=30",
+                       "testsrc2=size=320x240:rate=30")
+    s, _ = te.analysis.run_pass(still, 4.0)
+    assert te.analysis.detect_cuts(s["motion"]) == []
