@@ -1,6 +1,6 @@
 [project]
 name = "timelapse-editor"
-version = "0.4.0"
+version = "0.3.0"
 description = "Time-lapse editor for action camera footage: per-segment speed, cuts and audio, driven by ffmpeg."
 requires-python = ">=3.14"
 dependencies = []   # the program uses only the standard library; ffmpeg and ffprobe must be on PATH
