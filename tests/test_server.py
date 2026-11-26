@@ -706,3 +706,51 @@ def test_scene_cuts_are_found_and_still_video_has_none(tmp_path):
                        "testsrc2=size=320x240:rate=30")
     s, _ = te.analysis.run_pass(still, 4.0)
     assert te.analysis.detect_cuts(s["motion"]) == []
+
+
+def _pan_then_object_clip(path, tmp_path):
+    """2 s with the whole picture panning, then 2 s with a still picture and a box moving in it.
+    The picture has a fixed pattern (a frame of testsrc2) so that only the movement is measured."""
+    pattern = str(tmp_path / "pattern.png")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+                    "-frames:v", "1", pattern], check=True)
+    graph = ("movie=" + pattern + ",loop=loop=-1:size=1:start=0,fps=30,setpts=N/30/TB[p];"
+             "color=c=black:size=320x180:rate=30[c];[c][p]overlay=x='-t*60':y=-90:shortest=1,"
+             "trim=duration=2,setpts=PTS-STARTPTS[pan];"
+             "movie=" + pattern + ",loop=loop=-1:size=1:start=0,fps=30,setpts=N/30/TB,crop=320:180:0:90[q];"
+             "color=c=white:size=40x40:rate=30[bx];[q][bx]overlay=x='20+t*60':y=60:shortest=1,"
+             "trim=duration=2,setpts=PTS-STARTPTS[box];[pan][box]concat=n=2:v=1:a=0,format=yuv420p[v]")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-filter_complex", graph, "-map", "[v]",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", path], check=True)
+    return path
+
+
+@requires_ffmpeg
+def test_camera_and_object_movement_are_told_apart(tmp_path):
+    pytest.importorskip("cv2")
+    import timelapse_editor.camera as cam
+    clip = _pan_then_object_clip(str(tmp_path / "pan_object.mp4"), tmp_path)
+    camera, obj = cam.camera_pass(clip, 4.0)
+    pan_cam = sum(camera[5:15]) / 10
+    assert 4.5 < pan_cam < 7.5                       # the picture moved about 6 px per 0.1 s
+    assert sum(obj[5:15]) / 10 < 0.2                 # a pan is not an object moving
+    assert sum(camera[25:35]) / 10 < 0.5             # the box moves, the picture does not
+    assert sum(obj[25:35]) / 10 > 0.5                # the box is an object moving
+
+
+@requires_ffmpeg
+def test_camera_result_is_cached_for_the_video(tmp_path, clean_state):
+    pytest.importorskip("cv2")
+    import timelapse_editor.camera as cam
+    clip = _pan_then_object_clip(str(tmp_path / "cached.mp4"), tmp_path)
+    info = te.probe(clip)
+    clean_state["info"] = info
+    clean_state["camera_jobs"] = set()
+    d = clean_state["cache"]
+    cam_values, obj_values = cam.camera_pass(clip, info["duration"])
+    te.analysis.update_store(d, {
+        "camera": {"version": te.analysis.SERIES_VERSION["camera"], "values": cam_values},
+        "object": {"version": te.analysis.SERIES_VERSION["object"], "values": obj_values}})
+    status = te.camera_status(start=True)
+    assert status["state"] == "ready"
+    assert status["series"]["camera"] == cam_values
