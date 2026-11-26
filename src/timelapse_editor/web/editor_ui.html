@@ -784,8 +784,7 @@ function tickFrame(ts) {
   const dt = S.last ? (ts - S.last) / 1000 : 0;
   S.last = ts;
   if (S.real) {
-    // before the metadata of a new source the element reports 0: the cursor keeps its place then
-    if (!S.scrub && vid.readyState >= 1) S.T = vid.currentTime;
+    if (!S.scrub) S.T = vid.currentTime;
     const p = pieceAt(S.T);
     if (p && !S.scrub) {
       const L = lane(p.level);
@@ -1500,9 +1499,8 @@ function watchProxy() {
   const check = () => fetch('/api/info').then(r => r.json()).then(j => {
     if (j.info && j.info.proxy_ready && !proxyUsed) {
       proxyUsed = true;
-      const playing = !vid.paused;
-      // the position is read when the metadata arrives: a seek made in between must not be lost
-      vid.onloadedmetadata = () => { vid.currentTime = S.T || 0; if (playing) vid.play(); };
+      const t = vid.currentTime || 0, playing = !vid.paused;
+      vid.onloadedmetadata = () => { vid.currentTime = t; if (playing) vid.play(); };
       vid.src = '/video?proxy=1';
       pvid.src = '/video?proxy=1';
       status('Optimized preview ready (' + (j.info.proxy_encoder || 'CPU') + ').');
