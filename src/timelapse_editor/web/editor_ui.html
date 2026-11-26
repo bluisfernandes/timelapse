@@ -57,13 +57,6 @@
   #ahead button { font-size:12px; padding:3px 6px; align-self:flex-start; }
   #ahead input[type=range] { width:150px; }
   #wave { display:block; }
-  .menuwrap { position:relative; display:inline-block; }
-  .menu { position:absolute; top:100%; left:0; z-index:30; margin-top:4px; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:6px 8px; display:flex; flex-direction:column; gap:6px; min-width:160px; box-shadow:0 6px 20px #0008; font-size:13px; }
-  .menu[hidden] { display:none; }
-  .menu label { display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; }
-  .gwrap { position:relative; }
-  .cutline { position:absolute; top:0; bottom:0; width:2px; background:#ff5a7a; pointer-events:none; }
-  .mhead { width:190px; flex:0 0 190px; position:sticky; left:0; z-index:5; background:var(--panel); border-right:1px solid var(--line); padding:4px 8px; display:flex; flex-direction:column; justify-content:center; gap:3px; font-size:12px; }
 
   #lanes { position:relative; }
   .row { position:relative; display:flex; height:54px; border-bottom:1px solid var(--line); }
@@ -112,7 +105,7 @@
 <body>
 
 <div class="bar">
-  <b>Time-lapse editor</b> <span class="muted" id="ver">v0.4</span>
+  <b>Time-lapse editor</b> <span class="muted" id="ver">v0.3</span>
   <span class="spacer"></span>
   <button id="loadBtn" title="Import video">Import</button>
   <button id="openBtn" title="Open project">📂</button>
@@ -197,7 +190,6 @@
   <button id="cut">Cut at cursor</button>
   <button id="confirm" style="display:none">Confirm merge</button>
   <button id="undo">Undo</button>
-  <span class="menuwrap"><button id="graphsBtn">Graphs ▾</button><div id="graphMenu" class="menu" hidden></div></span>
   <span class="spacer"></span>
   <span id="cuthint" class="hint"></span>
 </div>
@@ -224,8 +216,6 @@
     <div id="ahead"></div>
     <div id="wavewrap" style="position:relative"><div id="wavetiles" style="display:flex;height:44px"></div><div id="thline" style="position:absolute;left:0;right:0;top:0;height:0;border-top:1px dashed #ffd166aa;pointer-events:none"></div></div>
   </div>
-
-  <div id="graphrows"></div>
 
   <div id="lanes"></div>
   <div id="ph"></div>
@@ -277,44 +267,9 @@ function genAudio() {
 }
 genAudio();
 
-let SER = { motion: [], brightness: [], sharpness: [] };   // values every 0.1 s (from /api/analysis)
-let SER_REF = { motion: 1, brightness: 1, sharpness: 1 };  // value shown at full height
-let CUTS = [];          // times (s) of the scene cuts
-const STILL = [[15, 30], [50, 58], [80, 88]];   // simulated still parts, used without a real video
-function genSeries() {  // simulated values, used without a real video
-  seed = 11;
-  SER = { motion: [], brightness: [], sharpness: [] };
-  for (let i = 0; i < D / STEP; i++) {
-    const t = i * STEP, still = STILL.some(([a, b]) => t >= a && t < b);
-    SER.motion.push(still ? 0 : 0.2 + 0.8 * rnd());
-    SER.brightness.push(0.5 + 0.3 * Math.sin(t / 9) + 0.02 * rnd());
-    SER.sharpness.push(still ? 0.05 : 0.15 + 0.1 * rnd());
-  }
-  CUTS = [30, 60].filter(t => t < D);
-  setScales();
-}
-function setScales() {
-  // movement and sharpness: relative, the 95th percentile reaches the top, so one peak does not flatten the rest
-  for (const id of ['motion', 'sharpness']) {
-    const sorted = SER[id].filter(v => v > 0).sort((a, b) => a - b);
-    SER_REF[id] = sorted.length ? sorted[Math.floor(0.95 * (sorted.length - 1))] : 1;
-  }
-  SER_REF.brightness = 1;   // brightness is absolute: black is 0, white is 1
-}
-function seriesAt(id, i) { const v = SER[id][i]; return v === undefined ? 0 : Math.min(1, v / SER_REF[id]); }
-genSeries();
-
 const S = { pxPerSec: 12, segments: [], lanes: [], marks: [], sel: null, msel: [], anchor: null, hist: [], n: 1,
             drag: null, scrub: null, rz: null, T: 0, playing: false, threshold: 0.4, audioOpen: false,
-            editLane: null, addFor: null, real: false, previewing: false, previewEnd: null, last: 0,
-            graphs: { motion: true } };   // graphs shown below the audio (menu Graphs)
-// graphs that can be shown, in the order of the menu and of the rows
-const GRAPHS = [
-  { id: 'motion', label: 'Movement', color: '#ffb454', hint: 'still = no bar' },
-  { id: 'brightness', label: 'Brightness', color: '#e7c33c', hint: 'black to white' },
-  { id: 'sharpness', label: 'Sharpness', color: '#c678ff', hint: 'detail in the picture' },
-  { id: 'cuts', label: 'Scene cuts', color: '#ff5a7a', hint: 'red line = cut' },
-];
+            editLane: null, addFor: null, real: false, previewing: false, previewEnd: null, last: 0 };
 
 const uid = () => 's' + (S.n++);
 const lane = id => S.lanes.find(l => l.id === id);
@@ -583,7 +538,6 @@ function render() {
 
   $('#ahead').innerHTML = aheadHTML();
   drawWave(W);
-  renderGraphRows(W);
 
   const d = S.drag;
   const items = timeline().map(p => {
@@ -678,74 +632,29 @@ function blockEl(p, L, touch) {
 }
 
 const WAVE_H = 44;   // height of the audio track (without the empty area below the text)
-const MOT_H = 44;    // height of the movement track
 // browsers do not draw canvases wider than about 65 thousand pixels: the graph is split into parts
 const WAVE_TILE = 16000;
-// paint(ctx) draws in the coordinates of the whole graph; each part is shifted by its start
-function tiledCanvas(sel, W, H, paint) {
-  const box = $(sel);
+function drawWave(W) {
+  const box = $('#wavetiles');
   box.innerHTML = '';
   for (let x0 = 0; x0 < W; x0 += WAVE_TILE) {
     const w = Math.min(WAVE_TILE, W - x0);
     const c = document.createElement('canvas');
-    c.width = w; c.height = H; c.style.width = w + 'px'; c.style.height = H + 'px';
+    c.width = w; c.height = WAVE_H; c.style.width = w + 'px'; c.style.height = WAVE_H + 'px';
     box.appendChild(c);
     const ctx = c.getContext('2d');
-    ctx.translate(-x0, 0);
-    paint(ctx);
-  }
-}
-function drawWave(W) {
-  tiledCanvas('#wavetiles', W, WAVE_H, ctx => {
+    ctx.translate(-x0, 0);   // draws in the coordinates of the whole graph
     for (const [a, b] of regions(S.threshold)) { ctx.fillStyle = '#3ec68a22'; ctx.fillRect(a * S.pxPerSec, 0, (b - a) * S.pxPerSec, WAVE_H); }
     AUD.forEach((_raw, i) => {
       const v = audAt(i);
       ctx.fillStyle = v >= S.threshold ? '#3ec68a' : '#5b6478';
       ctx.fillRect(i * STEP * S.pxPerSec, WAVE_H - v * (WAVE_H - 4), Math.max(1, STEP * S.pxPerSec - 1), v * (WAVE_H - 4));
     });
-  });
+  }
   // threshold line: separate element over the graph, to keep it sharp when zoomed in
   $('#thline').style.top = (WAVE_H - S.threshold * (WAVE_H - 4)) + 'px';
   $('#thline').style.width = W + 'px';
 }
-// movement: one bar per 0.1 s; still parts have no bar, so the key points stand out
-function renderGraphRows(W) {
-  const on = GRAPHS.filter(g => S.graphs[g.id]);
-  $('#graphrows').innerHTML = on.map(g => {
-    const body = g.id === 'cuts'
-      ? `<div class="gwrap" style="width:${W}px;height:44px">${CUTS.map(t => `<i class="cutline" style="left:${t * S.pxPerSec}px"></i>`).join('')}</div>`
-      : `<div class="gwrap"><div id="tiles-${g.id}" style="display:flex;height:44px"></div></div>`;
-    const action = g.id === 'cuts' ? '<button data-act="cutmarks" title="Put a marker at each cut">Add marks at cuts</button>' : '';
-    return `<div class="audiorow"><div class="mhead"><b>${g.label}</b><span class="hint"><i class="sw" style="background:${g.color}"></i>${g.hint}</span>${action}</div>${body}</div>`;
-  }).join('');
-  for (const g of on) if (g.id !== 'cuts') drawSeries(g.id, W);
-}
-// one bar per 0.1 s, its height is the value; zero values have no bar
-function drawSeries(id, W) {
-  const color = GRAPHS.find(g => g.id === id).color;
-  tiledCanvas('#tiles-' + id, W, MOT_H, ctx => {
-    ctx.fillStyle = color;
-    SER[id].forEach((_raw, i) => {
-      const v = seriesAt(id, i);
-      if (v <= 0) return;
-      ctx.fillRect(i * STEP * S.pxPerSec, MOT_H - v * (MOT_H - 4), Math.max(1, STEP * S.pxPerSec - 1), v * (MOT_H - 4));
-    });
-  });
-}
-function markCuts() {
-  snapshot();
-  let n = 0;
-  for (const t of CUTS) {
-    if (S.marks.some(m => Math.abs(m.t - t) < 0.1)) continue;
-    S.marks.push({ t }); n++;
-  }
-  S.marks.sort((x, y) => x.t - y.t);
-  render();
-  status(n ? `${n} marker(s) created at the scene cuts.` : 'The scene cuts already have a marker.');
-}
-$('#graphrows').addEventListener('click', e => {
-  if (e.target.dataset.act === 'cutmarks') markCuts();
-});
 
 function updateButtons() {
   const cs = cutState(), g = mergeGroup();
@@ -1029,26 +938,6 @@ document.addEventListener('click', e => {
   if (changed) render();
 });
 
-// Graphs menu: one checkbox per graph; the choice is kept in the project file
-function renderGraphMenu() {
-  $('#graphMenu').innerHTML = GRAPHS.map(g => `<label><input type="checkbox" data-graph="${g.id}"${S.graphs[g.id] ? ' checked' : ''}> ${g.label}</label>`).join('');
-}
-$('#graphsBtn').addEventListener('click', e => {
-  e.stopPropagation();
-  const m = $('#graphMenu');
-  m.hidden = !m.hidden;
-  if (!m.hidden) renderGraphMenu();
-});
-$('#graphMenu').addEventListener('change', e => {
-  const id = e.target.dataset.graph;
-  if (!id) return;
-  S.graphs[id] = e.target.checked;
-  render();
-});
-document.addEventListener('click', e => {
-  if (!e.target.closest('.menuwrap')) $('#graphMenu').hidden = true;
-});
-
 $('#ahead').addEventListener('click', e => {
   const act = e.target.dataset.act;
   if (act === 'audio') { S.audioOpen = !S.audioOpen; render(); }
@@ -1086,7 +975,7 @@ $('#grip').addEventListener('pointerdown', e => {
 const HELP = {
   about: `<h2>Time-lapse editor</h2>
     <p>Editor for creating time-lapses with different speeds in each part of the video, as a timeline of levels.</p>
-    <p class="muted">Version v0.4. Uses <b>timelapse_editor.py</b> with ffmpeg. Without a loaded video, the interface shows simulated data for testing.</p>
+    <p class="muted">Version v0.3. Uses <b>timelapse_editor.py</b> with ffmpeg. Without a loaded video, the interface shows simulated data for testing.</p>
     <h3>How the timeline works</h3>
     <ul>
       <li><b>Ruler (original):</b> video time as it was recorded.</li>
@@ -1108,7 +997,6 @@ const HELP = {
       <li><b>Select several segments:</b> <kbd>Ctrl</kbd> + click adds or removes a segment. <kbd>Shift</kbd> + click selects the range between the last marked segment and the clicked one.</li>
       <li><b>Merge segments:</b> if the selection is of adjacent segments on the same level, the <b>Confirm merge</b> button appears.</li>
       <li><b>Audio:</b> the ✎ panel of each level sets the audio (mute, original or corrected) and the volume. In <b>Audio · intensity</b>, adjust the speech threshold and mark the segments with speech.</li>
-      <li><b>Movement:</b> the orange graph under the audio shows how much the picture changes. Still parts have no bar, so the start and end of each action are easy to spot.</li>
       <li><b>Markers:</b> double-click the ruler or the final line to create a marker. Double-click a marker to remove it.</li>
       <li><b>Preview:</b> <b>Play selected segment</b> plays only that segment, without changing the edit.</li>
       <li><b>Cancel a drag:</b> press <kbd>Esc</kbd> before releasing the mouse.</li>
@@ -1276,10 +1164,10 @@ $('#file').onchange = e => {
   vid.onloadedmetadata = () => {
     S.real = true; $('#screen').classList.add('real');
     VID_ASPECT = vid.videoWidth / vid.videoHeight || 16 / 9;
-    D = vid.duration; genAudio(); genSeries(); reset(); S.T = 0;
+    D = vid.duration; genAudio(); reset(); S.T = 0;
     S.pxPerSec = Math.max(3, ($('#wrap').clientWidth - LABEL - 30) / D);
     $('#fname').textContent = f.name; VIDEO_NAME = f.name;
-    render(); status('Video loaded. The audio and movement bars are still simulated in this mockup.');
+    render(); status('Video loaded. The audio bar is still simulated in this mockup.');
   };
   vid.src = URL.createObjectURL(f);
 };
@@ -1297,7 +1185,6 @@ function migrateProject(data) {
     lanes: (data.lanes || []).map(l => ({ ...l, audio: OLD_AUDIO[l.audio] || l.audio })),
     marks: data.marks || [],
     threshold: data.threshold ?? data.th ?? 0.4,
-    graphs: data.graphs || {},
     video: data.video || {},
   };
 }
@@ -1306,7 +1193,6 @@ function applyProject(raw) {
   const data = migrateProject(raw);
   S.segments = data.segments; S.lanes = data.lanes.length ? data.lanes : S.lanes;
   S.marks = data.marks; S.threshold = data.threshold;
-  S.graphs = { motion: true, ...data.graphs };
   S.sel = null; S.msel = []; S.hist = []; S.anchor = null; S.editLane = null; S.addFor = null;
   render();
 }
@@ -1348,7 +1234,7 @@ let PENDING_PROJECT = null; // open project whose video was not found; applied w
 $('#saveBtn').onclick = async () => {
   const name = 'timelapse_' + (VIDEO_NAME ? VIDEO_NAME.replace(/\.[^.]+$/, '') : 'project') + '.json';
   const text = JSON.stringify({ version: 2, duration: D, segments: S.segments, lanes: S.lanes, marks: S.marks,
-    threshold: S.threshold, graphs: S.graphs, video: { name: VIDEO_NAME, path: VIDEO_PATH } }, null, 2);
+    threshold: S.threshold, video: { name: VIDEO_NAME, path: VIDEO_PATH } }, null, 2);
   const download = () => {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
     const a = document.createElement('a'); a.href = url; a.download = name; a.click();
@@ -1456,7 +1342,7 @@ function startWithVideo(info) {
   // clears everything from the previous video: pause, preview switch handler, position and audio
   vid.pause(); pvid.pause();
   vid.onloadedmetadata = null;
-  AUD = []; SER = { motion: [], brightness: [], sharpness: [] }; CUTS = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
+  AUD = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
   if (S.kbT != null) S.kbT = null;
   hideScrub();
   FPS = info.fps; D = info.duration;
@@ -1479,9 +1365,8 @@ function startWithVideo(info) {
       const peak = Math.max(0, ...AUD);
       S.gain = peak > 0 ? Math.min(20, 1 / peak) : 1;
     }
-    render();   // the status is left to the movement graph, which is the last to finish
+    render(); status('Ready. Audio intensity loaded.');
   }).catch(() => status('Could not load the audio intensity.'));
-  loadAnalysis();
   watchProxy();
 }
 // When the preview proxy is ready, the preview switches to it without losing the position.
@@ -1499,22 +1384,6 @@ function watchProxy() {
     } else if (!proxyUsed) setTimeout(check, 2000);
   }).catch(() => {});
   check();
-}
-// The graphs take a while on a long video: ask again until the server has them.
-// ANALYSIS_TOKEN drops the answer of a video that was replaced in the meantime.
-let ANALYSIS_TOKEN = 0;
-function loadAnalysis() {
-  const token = ++ANALYSIS_TOKEN;
-  status('Calculating the graphs…');
-  const ask = () => fetch('/api/analysis').then(r => r.json()).then(a => {
-    if (token !== ANALYSIS_TOKEN) return;
-    if (!a.ready) return setTimeout(ask, 2000);
-    SER = { motion: [], brightness: [], sharpness: [], ...a.series };
-    CUTS = a.cuts || [];
-    setScales(); render();
-    status('Graphs ready.');
-  }).catch(() => { if (token === ANALYSIS_TOKEN) setTimeout(ask, 5000); });
-  ask();
 }
 function startSimulated() {
   reset();

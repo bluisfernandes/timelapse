@@ -49,9 +49,7 @@ def start_server(port, log_dir, video=None):
         args.append(video)
     args += ["--port", str(port), "--no-browser"]
     log = open(os.path.join(log_dir, f"server_{port}.log"), "w")
-    # the analysis cache goes to a folder of the test run, not to the user's cache
-    env = dict(os.environ, XDG_CACHE_HOME=os.path.join(log_dir, "cache"))
-    proc = subprocess.Popen(args, stdout=log, stderr=log, env=env)
+    proc = subprocess.Popen(args, stdout=log, stderr=log)
     wait_for_server(port)
     return proc
 
@@ -211,47 +209,6 @@ def test_saved_project_uses_version_2_and_english_keys(open_page):
     for key in ("segments", "lanes", "marks", "threshold", "video"):
         assert key in saved, key
     assert "segs" not in saved and "th" not in saved
-    no_errors(errors)
-
-
-# ---------------------------------------------------------------- graphs menu
-
-def test_graphs_menu_shows_and_hides_the_movement_row(open_page):
-    page, errors = open_page(PORT_VIDEO)
-    wait_ready(page)
-    assert page.locator("#tiles-motion").count() == 1
-    page.click("#graphsBtn")
-    page.wait_for_selector("#graphMenu:not([hidden])")
-    page.uncheck('#graphMenu input[data-graph="motion"]')
-    assert page.locator("#tiles-motion").count() == 0
-    assert state(page, "S.graphs.motion") is False
-    page.check('#graphMenu input[data-graph="motion"]')
-    assert page.locator("#tiles-motion").count() == 1
-    no_errors(errors)
-
-
-def test_saved_project_keeps_the_graphs_choice(open_page):
-    page, errors = open_page(PORT_VIDEO)
-    wait_ready(page)
-    page.evaluate("() => { window.showSaveFilePicker = undefined; S.graphs.motion = false; }")
-    with page.expect_download() as info:
-        page.click("#saveBtn")
-    saved = json.loads(open(info.value.path(), encoding="utf-8").read())
-    assert saved["graphs"] == {"motion": False}
-    no_errors(errors)
-
-
-def test_scene_cut_marks_are_added_from_the_graphs_menu(open_page):
-    # the simulated video has cuts at 30 s and 60 s
-    page, errors = open_page(PORT_EMPTY)
-    wait_ready_sim = "() => typeof S !== 'undefined' && S.real === false && typeof SER !== 'undefined'"
-    page.wait_for_function(wait_ready_sim, timeout=60000)
-    page.click("#graphsBtn")
-    page.check('#graphMenu input[data-graph="brightness"]')
-    page.check('#graphMenu input[data-graph="cuts"]')
-    page.click('#graphrows button[data-act="cutmarks"]')
-    marks = state(page, "S.marks.map(m => m.t)")
-    assert 30 in marks and 60 in marks, marks
     no_errors(errors)
 
 
