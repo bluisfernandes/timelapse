@@ -42,11 +42,13 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from . import analysis
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_FILE = os.path.join(HERE, "web", "editor_ui.html")
 
 SPEED_MIN, SPEED_MAX = 0.05, 16.0
-THUMB_FPS = 4  # thumbnails per second of video
+THUMB_FPS = analysis.THUMB_FPS  # thumbnails per second of video
 CRF_H264 = {"high": 18, "medium": 23, "compact": 28, "lossless": 0}
 CRF_H265 = {"high": 22, "medium": 26, "compact": 30, "lossless": 0}  # CRF 0: practically lossless (4:2:0), large file
 HEIGHT = {"original": None, "1080p": 1080, "720p": 720}
@@ -63,10 +65,12 @@ ENCODERS = [
     ("libx264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]),  # CPU, always
 ]
 
+STEP_MOTION = analysis.STEP   # seconds per value of the audio and motion graphs
 LOCK = threading.Lock()
 THUMB_LOCK = threading.Lock()
 STATE = {
-    "info": None, "cache": None, "audio": None, "audio_ready": threading.Event(),
+    "info": None, "cache": None, "tmp": None, "audio": None, "audio_ready": threading.Event(),
+    "results": None, "results_ready": threading.Event(),
     "thumbs_ready": False, "proxy": None, "proxy_encoder": None,
 }
 
@@ -138,24 +142,29 @@ def compute_audio(path):
     return levels
 
 
+def compute_motion(path, duration):
+    """Movement values only (used by the tests)."""
+    return analysis.run_pass(path, duration)[0]["motion"]
+
+
+def _job_media(path, duration, cache):
+    """Thumbnails and series, from the cache when they are there, else from one decode."""
+    store = analysis.analyze(path, duration, cache)
+    results = {"series": {k: analysis.values_of(store, k) for k in analysis.SERIES},
+               "cuts": analysis.values_of(store, "cuts")}
+    with LOCK:
+        if STATE["info"] and STATE["info"]["path"] == path:
+            STATE["results"] = results
+            STATE["thumbs_ready"] = os.path.exists(os.path.join(cache, "thumbs.done"))
+    STATE["results_ready"].set()
+
+
 def _job_audio(path, has_audio):
     levels = compute_audio(path) if has_audio else []
     with LOCK:
         if STATE["info"] and STATE["info"]["path"] == path:
             STATE["audio"] = levels
     STATE["audio_ready"].set()
-
-
-def _job_thumbs(path, cache):
-    """Single pass: generates one thumbnail every 1/THUMB_FPS seconds."""
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path,
-         "-vf", f"fps={THUMB_FPS},scale=320:-2", "-q:v", "4",
-         os.path.join(cache, "t%06d.jpg")],
-        capture_output=True)
-    with LOCK:
-        if STATE["info"] and STATE["info"]["path"] == path:
-            STATE["thumbs_ready"] = True
 
 
 def detect_encoder():
@@ -170,7 +179,7 @@ def detect_encoder():
     return ENCODERS[-1]
 
 
-def _job_proxy(path, cache):
+def _job_proxy(path, tmp):
     """720p proxy for preview (the original is kept for export)."""
     def proxy_cmd(enc_args, out):
         return ["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "scale=-2:720",
@@ -178,7 +187,7 @@ def _job_proxy(path, cache):
                 "-movflags", "+faststart", out]
 
     name, args = detect_encoder()
-    out = os.path.join(cache, "proxy.mp4")
+    out = os.path.join(tmp, "proxy.mp4")
     r = subprocess.run(proxy_cmd(args, out), capture_output=True)
     if r.returncode != 0 and name != "libx264":
         # the encoder passed the test but failed on the video: fall back to the CPU
@@ -196,16 +205,17 @@ def load_video(raw):
         raise FileNotFoundError(f"file not found: {raw}")
     info = probe(path)
     with LOCK:
-        old = STATE["cache"]
-        STATE.update(info=info, cache=tempfile.mkdtemp(prefix="tle_"), audio=None,
-                     thumbs_ready=False, proxy=None, proxy_encoder=None)
+        old_tmp = STATE["tmp"]
+        STATE.update(info=info, cache=analysis.entry_dir(info["path"]), tmp=tempfile.mkdtemp(prefix="tle_"),
+                     audio=None, results=None, thumbs_ready=False, proxy=None, proxy_encoder=None)
         STATE["audio_ready"].clear()
-    if old:
-        shutil.rmtree(old, ignore_errors=True)
+        STATE["results_ready"].clear()
+    if old_tmp:
+        shutil.rmtree(old_tmp, ignore_errors=True)
     cache = STATE["cache"]
     threading.Thread(target=_job_audio, args=(info["path"], info["audio"]), daemon=True).start()
-    threading.Thread(target=_job_thumbs, args=(info["path"], cache), daemon=True).start()
-    threading.Thread(target=_job_proxy, args=(info["path"], cache), daemon=True).start()
+    threading.Thread(target=_job_media, args=(info["path"], info["duration"], cache), daemon=True).start()
+    threading.Thread(target=_job_proxy, args=(info["path"], STATE["tmp"]), daemon=True).start()
     return info
 
 
@@ -644,6 +654,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/audio":
             STATE["audio_ready"].wait(timeout=600)
             return self._json({"levels": STATE["audio"] or []})
+        if u.path == "/api/analysis":   # does not wait: the page asks again until it is ready
+            res = STATE["results"] if STATE["results_ready"].is_set() else None
+            return self._json({"ready": res is not None, **(res or {"series": {}, "cuts": []})})
         if u.path == "/api/thumb":
             data = get_thumb(int(q.get("f", ["0"])[0]))
             if data:
@@ -700,20 +713,26 @@ class Handler(BaseHTTPRequestHandler):
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = length
-            while remaining > 0:
-                chunk = f.read(min(1 << 20, remaining))
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
+        # the browser routinely drops range requests (seek, source change);
+        # that is not an error worth a traceback
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
 
 
 def cleanup():
-    if STATE.get("cache"):
-        shutil.rmtree(STATE["cache"], ignore_errors=True)
+    # the cache folder of the video is kept for the next time; only the temporary files go
+    if STATE.get("tmp"):
+        shutil.rmtree(STATE["tmp"], ignore_errors=True)
 
 
 def run_cli(args):
@@ -764,6 +783,7 @@ def main():
               f"{info['fps']:.3f} fps · {info['frames']} frames")
     else:
         STATE["audio_ready"].set()
+        STATE["results_ready"].set()
         print("No video: the interface opens in simulation mode. Use the Import button on screen to choose a video.")
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
