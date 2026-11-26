@@ -70,7 +70,7 @@ LOCK = threading.Lock()
 THUMB_LOCK = threading.Lock()
 STATE = {
     "info": None, "cache": None, "tmp": None, "audio": None, "audio_ready": threading.Event(),
-    "motion": None, "motion_ready": threading.Event(),
+    "results": None, "results_ready": threading.Event(),
     "thumbs_ready": False, "proxy": None, "proxy_encoder": None,
 }
 
@@ -143,18 +143,20 @@ def compute_audio(path):
 
 
 def compute_motion(path, duration):
-    """Movement values only (used by the tests and the command line)."""
-    return analysis.run_pass(path, duration)[0]
+    """Movement values only (used by the tests)."""
+    return analysis.run_pass(path, duration)[0]["motion"]
 
 
 def _job_media(path, duration, cache):
-    """Thumbnails and movement, from the cache when they are there, else from one decode."""
-    levels = analysis.analyze(path, duration, cache)
+    """Thumbnails and series, from the cache when they are there, else from one decode."""
+    store = analysis.analyze(path, duration, cache)
+    results = {"series": {k: analysis.values_of(store, k) for k in analysis.SERIES},
+               "cuts": analysis.values_of(store, "cuts")}
     with LOCK:
         if STATE["info"] and STATE["info"]["path"] == path:
-            STATE["motion"] = levels
+            STATE["results"] = results
             STATE["thumbs_ready"] = os.path.exists(os.path.join(cache, "thumbs.done"))
-    STATE["motion_ready"].set()
+    STATE["results_ready"].set()
 
 
 def _job_audio(path, has_audio):
@@ -205,9 +207,9 @@ def load_video(raw):
     with LOCK:
         old_tmp = STATE["tmp"]
         STATE.update(info=info, cache=analysis.entry_dir(info["path"]), tmp=tempfile.mkdtemp(prefix="tle_"),
-                     audio=None, motion=None, thumbs_ready=False, proxy=None, proxy_encoder=None)
+                     audio=None, results=None, thumbs_ready=False, proxy=None, proxy_encoder=None)
         STATE["audio_ready"].clear()
-        STATE["motion_ready"].clear()
+        STATE["results_ready"].clear()
     if old_tmp:
         shutil.rmtree(old_tmp, ignore_errors=True)
     cache = STATE["cache"]
@@ -652,9 +654,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/audio":
             STATE["audio_ready"].wait(timeout=600)
             return self._json({"levels": STATE["audio"] or []})
-        if u.path == "/api/motion":   # does not wait: the page asks again until it is ready
-            ready = STATE["motion_ready"].is_set()
-            return self._json({"ready": ready, "levels": (STATE["motion"] or []) if ready else []})
+        if u.path == "/api/analysis":   # does not wait: the page asks again until it is ready
+            res = STATE["results"] if STATE["results_ready"].is_set() else None
+            return self._json({"ready": res is not None, **(res or {"series": {}, "cuts": []})})
         if u.path == "/api/thumb":
             data = get_thumb(int(q.get("f", ["0"])[0]))
             if data:
@@ -781,7 +783,7 @@ def main():
               f"{info['fps']:.3f} fps · {info['frames']} frames")
     else:
         STATE["audio_ready"].set()
-        STATE["motion_ready"].set()
+        STATE["results_ready"].set()
         print("No video: the interface opens in simulation mode. Use the Import button on screen to choose a video.")
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

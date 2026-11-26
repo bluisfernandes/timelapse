@@ -61,6 +61,8 @@
   .menu { position:absolute; top:100%; left:0; z-index:30; margin-top:4px; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:6px 8px; display:flex; flex-direction:column; gap:6px; min-width:160px; box-shadow:0 6px 20px #0008; font-size:13px; }
   .menu[hidden] { display:none; }
   .menu label { display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; }
+  .gwrap { position:relative; }
+  .cutline { position:absolute; top:0; bottom:0; width:2px; background:#ff5a7a; pointer-events:none; }
   .mhead { width:190px; flex:0 0 190px; position:sticky; left:0; z-index:5; background:var(--panel); border-right:1px solid var(--line); padding:4px 8px; display:flex; flex-direction:column; justify-content:center; gap:3px; font-size:12px; }
 
   #lanes { position:relative; }
@@ -275,30 +277,44 @@ function genAudio() {
 }
 genAudio();
 
-let MOT = [];           // movement per 0.1 s, 0 = still (from /api/motion)
-let MOT_REF = 1;        // value shown at full height (95th percentile, so one jump does not flatten the rest)
+let SER = { motion: [], brightness: [], sharpness: [] };   // values every 0.1 s (from /api/analysis)
+let SER_REF = { motion: 1, brightness: 1, sharpness: 1 };  // value shown at full height
+let CUTS = [];          // times (s) of the scene cuts
 const STILL = [[15, 30], [50, 58], [80, 88]];   // simulated still parts, used without a real video
-function genMotion() {
-  MOT = []; seed = 11;
+function genSeries() {  // simulated values, used without a real video
+  seed = 11;
+  SER = { motion: [], brightness: [], sharpness: [] };
   for (let i = 0; i < D / STEP; i++) {
-    const t = i * STEP;
-    MOT.push(STILL.some(([a, b]) => t >= a && t < b) ? 0 : 0.2 + 0.8 * rnd());
+    const t = i * STEP, still = STILL.some(([a, b]) => t >= a && t < b);
+    SER.motion.push(still ? 0 : 0.2 + 0.8 * rnd());
+    SER.brightness.push(0.5 + 0.3 * Math.sin(t / 9) + 0.02 * rnd());
+    SER.sharpness.push(still ? 0.05 : 0.15 + 0.1 * rnd());
   }
-  setMotionScale();
+  CUTS = [30, 60].filter(t => t < D);
+  setScales();
 }
-function setMotionScale() {
-  const sorted = MOT.filter(v => v > 0).sort((a, b) => a - b);
-  MOT_REF = sorted.length ? sorted[Math.floor(0.95 * (sorted.length - 1))] : 1;
+function setScales() {
+  // movement and sharpness: relative, the 95th percentile reaches the top, so one peak does not flatten the rest
+  for (const id of ['motion', 'sharpness']) {
+    const sorted = SER[id].filter(v => v > 0).sort((a, b) => a - b);
+    SER_REF[id] = sorted.length ? sorted[Math.floor(0.95 * (sorted.length - 1))] : 1;
+  }
+  SER_REF.brightness = 1;   // brightness is absolute: black is 0, white is 1
 }
-function motAt(i) { return Math.min(1, MOT[i] / MOT_REF); }
-genMotion();
+function seriesAt(id, i) { const v = SER[id][i]; return v === undefined ? 0 : Math.min(1, v / SER_REF[id]); }
+genSeries();
 
 const S = { pxPerSec: 12, segments: [], lanes: [], marks: [], sel: null, msel: [], anchor: null, hist: [], n: 1,
             drag: null, scrub: null, rz: null, T: 0, playing: false, threshold: 0.4, audioOpen: false,
             editLane: null, addFor: null, real: false, previewing: false, previewEnd: null, last: 0,
             graphs: { motion: true } };   // graphs shown below the audio (menu Graphs)
 // graphs that can be shown, in the order of the menu and of the rows
-const GRAPHS = [{ id: 'motion', label: 'Movement', color: '#ffb454', hint: 'still = no bar' }];
+const GRAPHS = [
+  { id: 'motion', label: 'Movement', color: '#ffb454', hint: 'still = no bar' },
+  { id: 'brightness', label: 'Brightness', color: '#e7c33c', hint: 'black to white' },
+  { id: 'sharpness', label: 'Sharpness', color: '#c678ff', hint: 'detail in the picture' },
+  { id: 'cuts', label: 'Scene cuts', color: '#ff5a7a', hint: 'red line = cut' },
+];
 
 const uid = () => 's' + (S.n++);
 const lane = id => S.lanes.find(l => l.id === id);
@@ -695,21 +711,41 @@ function drawWave(W) {
 // movement: one bar per 0.1 s; still parts have no bar, so the key points stand out
 function renderGraphRows(W) {
   const on = GRAPHS.filter(g => S.graphs[g.id]);
-  $('#graphrows').innerHTML = on.map(g => `<div class="audiorow">
-      <div class="mhead"><b>${g.label}</b><span class="hint"><i class="sw" style="background:${g.color}"></i>${g.hint}</span></div>
-      <div class="gwrap"><div id="tiles-${g.id}" style="display:flex;height:44px"></div></div></div>`).join('');
-  if (S.graphs.motion) drawMotion(W);
+  $('#graphrows').innerHTML = on.map(g => {
+    const body = g.id === 'cuts'
+      ? `<div class="gwrap" style="width:${W}px;height:44px">${CUTS.map(t => `<i class="cutline" style="left:${t * S.pxPerSec}px"></i>`).join('')}</div>`
+      : `<div class="gwrap"><div id="tiles-${g.id}" style="display:flex;height:44px"></div></div>`;
+    const action = g.id === 'cuts' ? '<button data-act="cutmarks" title="Put a marker at each cut">Add marks at cuts</button>' : '';
+    return `<div class="audiorow"><div class="mhead"><b>${g.label}</b><span class="hint"><i class="sw" style="background:${g.color}"></i>${g.hint}</span>${action}</div>${body}</div>`;
+  }).join('');
+  for (const g of on) if (g.id !== 'cuts') drawSeries(g.id, W);
 }
-function drawMotion(W) {
-  tiledCanvas('#tiles-motion', W, MOT_H, ctx => {
-    ctx.fillStyle = '#ffb454';
-    MOT.forEach((_raw, i) => {
-      const v = motAt(i);
+// one bar per 0.1 s, its height is the value; zero values have no bar
+function drawSeries(id, W) {
+  const color = GRAPHS.find(g => g.id === id).color;
+  tiledCanvas('#tiles-' + id, W, MOT_H, ctx => {
+    ctx.fillStyle = color;
+    SER[id].forEach((_raw, i) => {
+      const v = seriesAt(id, i);
       if (v <= 0) return;
       ctx.fillRect(i * STEP * S.pxPerSec, MOT_H - v * (MOT_H - 4), Math.max(1, STEP * S.pxPerSec - 1), v * (MOT_H - 4));
     });
   });
 }
+function markCuts() {
+  snapshot();
+  let n = 0;
+  for (const t of CUTS) {
+    if (S.marks.some(m => Math.abs(m.t - t) < 0.1)) continue;
+    S.marks.push({ t }); n++;
+  }
+  S.marks.sort((x, y) => x.t - y.t);
+  render();
+  status(n ? `${n} marker(s) created at the scene cuts.` : 'The scene cuts already have a marker.');
+}
+$('#graphrows').addEventListener('click', e => {
+  if (e.target.dataset.act === 'cutmarks') markCuts();
+});
 
 function updateButtons() {
   const cs = cutState(), g = mergeGroup();
@@ -1240,7 +1276,7 @@ $('#file').onchange = e => {
   vid.onloadedmetadata = () => {
     S.real = true; $('#screen').classList.add('real');
     VID_ASPECT = vid.videoWidth / vid.videoHeight || 16 / 9;
-    D = vid.duration; genAudio(); genMotion(); reset(); S.T = 0;
+    D = vid.duration; genAudio(); genSeries(); reset(); S.T = 0;
     S.pxPerSec = Math.max(3, ($('#wrap').clientWidth - LABEL - 30) / D);
     $('#fname').textContent = f.name; VIDEO_NAME = f.name;
     render(); status('Video loaded. The audio and movement bars are still simulated in this mockup.');
@@ -1420,7 +1456,7 @@ function startWithVideo(info) {
   // clears everything from the previous video: pause, preview switch handler, position and audio
   vid.pause(); pvid.pause();
   vid.onloadedmetadata = null;
-  AUD = []; MOT = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
+  AUD = []; SER = { motion: [], brightness: [], sharpness: [] }; CUTS = []; S.T = 0; S.playing = false; S.previewing = false; S.scrub = null;
   if (S.kbT != null) S.kbT = null;
   hideScrub();
   FPS = info.fps; D = info.duration;
@@ -1445,7 +1481,7 @@ function startWithVideo(info) {
     }
     render();   // the status is left to the movement graph, which is the last to finish
   }).catch(() => status('Could not load the audio intensity.'));
-  loadMotion();
+  loadAnalysis();
   watchProxy();
 }
 // When the preview proxy is ready, the preview switches to it without losing the position.
@@ -1464,18 +1500,20 @@ function watchProxy() {
   }).catch(() => {});
   check();
 }
-// The movement graph takes a while on a long video: ask again until the server has it.
-// MOTION_TOKEN drops the answer of a video that was replaced in the meantime.
-let MOTION_TOKEN = 0;
-function loadMotion() {
-  const token = ++MOTION_TOKEN;
-  status('Calculating the movement graph…');
-  const ask = () => fetch('/api/motion').then(r => r.json()).then(m => {
-    if (token !== MOTION_TOKEN) return;
-    if (!m.ready) return setTimeout(ask, 2000);
-    MOT = m.levels || []; setMotionScale(); render();
-    status('Movement graph ready.');
-  }).catch(() => { if (token === MOTION_TOKEN) setTimeout(ask, 5000); });
+// The graphs take a while on a long video: ask again until the server has them.
+// ANALYSIS_TOKEN drops the answer of a video that was replaced in the meantime.
+let ANALYSIS_TOKEN = 0;
+function loadAnalysis() {
+  const token = ++ANALYSIS_TOKEN;
+  status('Calculating the graphs…');
+  const ask = () => fetch('/api/analysis').then(r => r.json()).then(a => {
+    if (token !== ANALYSIS_TOKEN) return;
+    if (!a.ready) return setTimeout(ask, 2000);
+    SER = { motion: [], brightness: [], sharpness: [], ...a.series };
+    CUTS = a.cuts || [];
+    setScales(); render();
+    status('Graphs ready.');
+  }).catch(() => { if (token === ANALYSIS_TOKEN) setTimeout(ask, 5000); });
   ask();
 }
 function startSimulated() {
