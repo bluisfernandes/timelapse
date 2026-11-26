@@ -652,9 +652,11 @@ def test_analysis_recomputes_when_the_series_version_changes(tmp_path, monkeypat
     d = str(tmp_path / "entry")
     os.makedirs(d)
     an.write_store(d, {"motion": {"version": 0, "values": [9.9]}})
-    values = an.analyze(clip, 2.0, d, thumbs=False)
+    store = an.analyze(clip, 2.0, d, thumbs=False)
+    values = an.values_of(store, "motion")
     assert values[0] == 0.0 and max(values) < 1
-    assert an.read_store(d)["motion"]["version"] == an.SERIES_VERSION["motion"]
+    assert store["motion"]["version"] == an.SERIES_VERSION["motion"]
+    assert store["brightness"]["version"] == an.SERIES_VERSION["brightness"]
 
 
 def test_fingerprint_changes_with_the_file(tmp_path):
@@ -664,3 +666,43 @@ def test_fingerprint_changes_with_the_file(tmp_path):
     before = an.fingerprint(str(f))
     f.write_bytes(b"abcdef")
     assert an.fingerprint(str(f)) != before
+
+
+def _make_clip(path, *parts):
+    """Concatenates the given lavfi sources, 2 s each, into one video."""
+    inputs, chains = [], []
+    for i, src in enumerate(parts):
+        inputs += ["-f", "lavfi", "-i", src]
+        chains.append(f"[{i}:v]trim=duration=2,setpts=PTS-STARTPTS[p{i}]")
+    fc = ";".join(chains) + ";" + "".join(f"[p{i}]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=1:a=0[v]"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", fc, "-map", "[v]",
+                    "-r", "30", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", path],
+                   check=True)
+    return path
+
+
+@requires_ffmpeg
+def test_brightness_and_sharpness_follow_the_picture(tmp_path):
+    clip = _make_clip(str(tmp_path / "scenes.mp4"),
+                      "color=c=gray:size=320x240:rate=30",          # flat mid grey: no detail
+                      "testsrc2=size=320x240:rate=30")               # full of detail
+    s, ok = te.analysis.run_pass(clip, 4.0)
+    assert ok
+    b, sh = s["brightness"], s["sharpness"]
+    assert abs(b[5] - 0.5) < 0.02                     # grey is in the middle of black and white
+    assert sh[5] < 0.001                              # flat: no detail
+    assert max(sh[25:35]) > 0.005                     # the detailed part has detail
+
+
+@requires_ffmpeg
+def test_scene_cuts_are_found_and_still_video_has_none(tmp_path):
+    cuts = _make_clip(str(tmp_path / "cuts.mp4"),
+                      "testsrc2=size=320x240:rate=30",
+                      "mandelbrot=size=320x240:rate=30",
+                      "color=c=gray:size=320x240:rate=30")
+    s, _ = te.analysis.run_pass(cuts, 6.0)
+    assert te.analysis.detect_cuts(s["motion"]) == [2.0, 4.0]
+    still = _make_clip(str(tmp_path / "still.mp4"), "testsrc2=size=320x240:rate=30",
+                       "testsrc2=size=320x240:rate=30")
+    s, _ = te.analysis.run_pass(still, 4.0)
+    assert te.analysis.detect_cuts(s["motion"]) == []
