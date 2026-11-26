@@ -5,10 +5,6 @@ description = "Time-lapse editor for action camera footage: per-segment speed, c
 requires-python = ">=3.14"
 dependencies = []   # the program uses only the standard library; ffmpeg and ffprobe must be on PATH
 
-[project.optional-dependencies]
-# optional: camera and object movement graphs (uv sync --extra camera)
-camera = ["opencv-python-headless>=4.10"]
-
 [project.scripts]
 timelapse-editor = "timelapse_editor:main"
 
