@@ -708,3 +708,129 @@ def test_edited_level_speed_applies_to_the_export(open_page):
     pieces = state(page, "exportPieces().map(p => p.speed)")
     assert 8 in pieces
     no_errors(errors)
+
+
+# ---------------------------------------------------------------- analysis endpoints, graphs and projects
+
+def _get_json(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def test_analysis_endpoint_is_not_ready_without_a_video(servers):
+    assert _get_json(PORT_EMPTY, "/api/analysis") == {"ready": False, "series": {}, "cuts": []}
+    assert _get_json(PORT_EMPTY, "/api/camera") == {"state": "none"}
+
+
+@requires_ffmpeg
+def test_analysis_endpoint_returns_every_series_with_a_video(servers):
+    deadline = time.time() + 240
+    res = _get_json(PORT_VIDEO, "/api/analysis")
+    while not res["ready"] and time.time() < deadline:
+        time.sleep(1)
+        res = _get_json(PORT_VIDEO, "/api/analysis")
+    assert res["ready"]
+    assert set(res["series"]) == {"motion", "brightness", "sharpness"}
+    n = len(res["series"]["motion"])
+    assert all(len(v) == n for v in res["series"].values())
+    assert all(0 <= x <= 1 for x in res["series"]["brightness"])
+    assert isinstance(res["cuts"], list)
+
+
+@requires_ffmpeg
+def test_brightness_and_sharpness_rows_show_their_values(open_page):
+    page, errors = open_page(PORT_VIDEO)
+    wait_ready(page)
+    page.click("#graphsBtn")
+    page.check('#graphMenu input[data-graph="brightness"]')
+    page.check('#graphMenu input[data-graph="sharpness"]')
+    assert page.locator("#tiles-brightness").count() == 1
+    assert page.locator("#tiles-sharpness").count() == 1
+    page.wait_for_function("() => SER.brightness.length > 0 && SER.sharpness.length > 0", timeout=60000)
+    assert max(state(page, "SER.brightness")) > 0.2       # the test picture is not black
+    no_errors(errors)
+
+
+@requires_ffmpeg
+def test_project_keeps_the_graphs_choice_when_opened(open_page, clips, tmp_path):
+    page, errors = open_page(PORT_VIDEO)
+    wait_ready(page)
+    d = state(page, "D")
+    project = {"version": 2, "duration": d, "segments": [{"id": "a", "start": 0, "end": d, "level": "l1x"}],
+               "lanes": [{"id": "l1x", "speed": 1, "audio": "original"}], "marks": [], "threshold": 0.4,
+               "graphs": {"motion": False, "brightness": True},
+               "video": {"name": "test_clip.mp4", "path": clips["av"]}}
+    file = tmp_path / "graphs_project.json"
+    file.write_text(json.dumps(project), encoding="utf-8")
+    page.set_input_files("#pfile", str(file))
+    page.wait_for_function("() => S.graphs.brightness === true && S.graphs.motion === false", timeout=60000)
+    assert page.locator("#tiles-motion").count() == 0
+    assert page.locator("#tiles-brightness").count() == 1
+    no_errors(errors)
+
+
+@requires_ffmpeg
+def test_project_without_graphs_shows_the_movement_only(open_page, clips, tmp_path):
+    page, errors = open_page(PORT_VIDEO)
+    wait_ready(page)
+    d = state(page, "D")
+    project = {"duration": d, "segs": [{"id": "a", "start": 0, "end": d, "level": "l1x"}],
+               "lanes": [{"id": "l1x", "speed": 1, "audio": "original"}], "marks": [], "th": 0.4,
+               "video": {"name": "test_clip.mp4", "path": clips["av"]}}
+    file = tmp_path / "old_project.json"
+    file.write_text(json.dumps(project), encoding="utf-8")
+    page.evaluate("() => { S.graphs = { motion: false, cuts: true }; }")
+    page.set_input_files("#pfile", str(file))
+    page.wait_for_function("() => S.graphs.motion === true && S.graphs.cuts === undefined", timeout=60000)
+    assert state(page, "S.graphs") == {"motion": True}
+    no_errors(errors)
+
+
+def test_cut_marks_are_not_added_twice(open_page):
+    # the simulated video has cuts at 30 s and 60 s
+    page, errors = open_page(PORT_EMPTY)
+    page.wait_for_function("() => typeof SER !== 'undefined' && CUTS.length === 2", timeout=60000)
+    page.click("#graphsBtn")
+    page.check('#graphMenu input[data-graph="cuts"]')
+    page.click('#graphrows button[data-act="cutmarks"]')
+    page.click('#graphrows button[data-act="cutmarks"]')
+    assert "already" in page.locator("#status").text_content()
+    assert state(page, "S.marks.length") == 2
+    no_errors(errors)
+
+
+@requires_ffmpeg
+def test_camera_graph_explains_that_opencv_is_missing(browser, tmp_path, clips):
+    # a server whose python cannot import cv2: the optional extra is not installed
+    fake = tmp_path / "no_opencv"
+    fake.mkdir()
+    (fake / "cv2.py").write_text("raise ImportError('no OpenCV in this test')\n", encoding="utf-8")
+    port = 8794
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(fake), os.environ.get("PYTHONPATH", "")]))
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    log = open(tmp_path / "no_opencv.log", "w")
+    proc = subprocess.Popen([sys.executable, "-m", "timelapse_editor", clips["av"], "--port", str(port), "--no-browser"],
+                            stdout=log, stderr=log, env=env)
+    try:
+        wait_for_server(port)
+        assert _get_json(port, "/api/camera") == {"state": "unavailable"}
+        ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = ctx.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append("JS: " + str(e)))
+        page.goto(f"http://127.0.0.1:{port}/")
+        wait_ready(page)
+        # the graphs of the analysis finish first: their "ready" message would replace the camera hint
+        page.wait_for_function("() => SER.motion.length > 0 && /Graphs ready/.test(document.querySelector('#status').textContent)",
+                               timeout=120000)
+        page.click("#graphsBtn")
+        page.check('#graphMenu input[data-graph="camera"]')
+        page.wait_for_function("() => S.graphs.camera === false", timeout=30000)
+        assert "OpenCV" in page.locator("#status").text_content()
+        assert page.locator("#tiles-camera").count() == 0
+        assert not errors, errors
+        ctx.close()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=20)
+        log.close()

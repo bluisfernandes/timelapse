@@ -65,3 +65,13 @@ def loaded(clean_state, clips):
     info = te.probe(clips["av"])
     clean_state["info"] = info
     return info
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _remove_preview_folders():
+    """Tests that load a video inside the test process do not run the editor's exit cleanup:
+    the temporary folder of the last video is removed here."""
+    yield
+    tmp = te.STATE.get("tmp")
+    if tmp:
+        shutil.rmtree(tmp, ignore_errors=True)

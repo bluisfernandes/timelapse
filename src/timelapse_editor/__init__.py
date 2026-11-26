@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -819,6 +820,8 @@ def main():
         STATE["results_ready"].set()
         print("No video: the interface opens in simulation mode. Use the Import button on screen to choose a video.")
 
+    # SIGTERM (kill) ends the program the normal way, so the temporary files are removed too
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Editor at {url}  (Ctrl+C to quit)")
