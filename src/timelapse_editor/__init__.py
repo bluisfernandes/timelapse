@@ -33,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -84,26 +85,24 @@ def check_tools():
 
 
 def probe(path):
+    # one ffprobe call (each call takes a while here): the first video and the first audio stream
     r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,r_frame_rate,nb_frames:format=duration",
+        ["ffprobe", "-v", "error",
+         "-show_entries", "stream=codec_type,width,height,r_frame_rate,nb_frames,sample_rate:format=duration",
          "-of", "json", path],
         capture_output=True, text=True, check=True)
     d = json.loads(r.stdout)
-    st = d["streams"][0]
+    streams = d.get("streams") or []
+    st = next(x for x in streams if x.get("codec_type") == "video")
     num, den = st["r_frame_rate"].split("/")
     fps = float(num) / float(den)
     dur = float(d["format"]["duration"])
     nb = st.get("nb_frames", "")
     frames = int(nb) if str(nb).isdigit() else round(dur * fps)
 
-    a = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=sample_rate", "-of", "json", path],
-        capture_output=True, text=True)
-    a_json = json.loads(a.stdout or "{}").get("streams") or []
-    has_audio = bool(a_json)
-    sample_rate = int(a_json[0].get("sample_rate", 48000)) if has_audio else 48000
+    a_st = next((x for x in streams if x.get("codec_type") == "audio"), None)
+    has_audio = a_st is not None
+    sample_rate = int(a_st.get("sample_rate", 48000)) if has_audio else 48000
 
     return {
         "path": os.path.abspath(path),
@@ -267,7 +266,7 @@ def _extract_frame(frame, info, out, vf="", qargs=()):
     if r.returncode == 0 and os.path.exists(out):
         return r
     sel = f"select=eq(n\\,{frame})" + (f",{vf}" if vf else "")
-    slow = base + ["-i", info["path"], "-vf", sel, "-vsync", "0",
+    slow = base + ["-i", info["path"], "-vf", sel, "-fps_mode", "passthrough",
                    "-frames:v", "1", *qargs, "-y", out]
     return subprocess.run(slow, capture_output=True, text=True)
 
@@ -390,9 +389,9 @@ def export_pieces(info, pieces, fmt="mp4_h264", res="original", quality="medium"
             # expected output frames: the segment duration divided by the speed.
             # Without a limit, ffmpeg produced 1 to 2 extra frames per accelerated segment (item 55).
             n_out = max(1, round((ef - sf) / sp))
-            vf = [f"setpts=(PTS-STARTPTS)/{sp:.6f}"]
-            if sp < 1:   # slow motion: repeats the last frame to complete the duration
-                vf.append(f"tpad=stop_mode=clone:stop_duration={1 / fps:.6f}")
+            # the output is a constant frame rate: the stretched timestamps of a slow segment are
+            # filled with repeated frames (fps), so the frame count is the expected one
+            vf = [f"setpts=(PTS-STARTPTS)/{sp:.6f}", f"fps={fps:.6f}"]
             if h:
                 vf.append(f"scale=-2:{h}")
             cmd = ["ffmpeg", "-y", "-v", "error",
@@ -821,6 +820,8 @@ def main():
         STATE["results_ready"].set()
         print("No video: the interface opens in simulation mode. Use the Import button on screen to choose a video.")
 
+    # SIGTERM (kill) ends the program the normal way, so the temporary files are removed too
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Editor at {url}  (Ctrl+C to quit)")

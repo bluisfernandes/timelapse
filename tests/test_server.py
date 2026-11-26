@@ -754,3 +754,69 @@ def test_camera_result_is_cached_for_the_video(tmp_path, clean_state):
     status = te.camera_status(start=True)
     assert status["state"] == "ready"
     assert status["series"]["camera"] == cam_values
+
+
+@requires_ffmpeg
+def test_slow_motion_lasts_as_long_as_the_speed_says(loaded, tmp_path):
+    # 12 s of video at 0.5x must play for 24 s, with a constant frame rate (not stretched timestamps)
+    out = str(tmp_path / "slow.mp4")
+    r = te.export_pieces(loaded, [(0, loaded["frames"], 0.5, "mute", 1.0)], output=out)
+    assert r["ok"], r.get("msg")
+    got = te.probe(out)
+    assert got["duration"] == pytest.approx(24.0, abs=0.2)
+    assert got["frames"] == pytest.approx(720, abs=2)
+
+
+@requires_ffmpeg
+def test_export_reports_the_segment_that_failed(loaded, tmp_path):
+    broken = dict(loaded, path=str(tmp_path / "missing.mp4"))
+    r = te.export_pieces(broken, [(0, 30, 1.0, "mute", 1.0)], output=str(tmp_path / "out.mp4"))
+    assert not r["ok"]
+    assert r["msg"].startswith("Failed on segment 1")
+
+
+def test_frame_export_needs_a_video(monkeypatch, tmp_path):
+    monkeypatch.setitem(te.STATE, "info", None)
+    r = te.export_frame({"frame": 1, "format": "png", "folder": str(tmp_path)})
+    assert not r["ok"] and "No video" in r["msg"]
+
+
+def test_browse_reports_a_missing_folder():
+    r = te.browse_dir("/this/folder/does/not/exist")
+    assert not r["ok"] and "not found" in r["msg"]
+
+
+@requires_ffmpeg
+def test_probe_of_a_video_without_sound(clips):
+    info = te.probe(clips["mute"])
+    assert info["audio"] is False
+    assert info["sample_rate"] == 48000
+    assert info["frames"] > 0 and info["fps"] > 0
+
+
+@requires_ffmpeg
+def test_probe_reads_sound_and_video_from_one_call(clips):
+    info = te.probe(clips["av"])
+    assert info["audio"] is True and info["width"] == 640 and info["height"] == 360
+
+
+@requires_ffmpeg
+def test_temporary_files_are_removed_when_the_program_is_terminated(clips, tmp_path):
+    # the temporary folder of the preview goes to TMPDIR, so this run can be checked on its own
+    import socket
+    import time as _time
+    env = dict(os.environ, TMPDIR=str(tmp_path), XDG_CACHE_HOME=str(tmp_path / "cache"))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen([sys.executable, "-m", "timelapse_editor", clips["av"], "--port", str(port),
+                             "--no-browser"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    try:
+        deadline = _time.time() + 30
+        while _time.time() < deadline and not [f for f in os.listdir(tmp_path) if f.startswith("tle_")]:
+            _time.sleep(0.2)
+        assert [f for f in os.listdir(tmp_path) if f.startswith("tle_")], "no temporary folder was made"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
+    assert [f for f in os.listdir(tmp_path) if f.startswith("tle_")] == []

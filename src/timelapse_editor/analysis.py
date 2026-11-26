@@ -141,6 +141,7 @@ def detect_cuts(values, window=20, ratio=3.0, min_value=0.06):
     """Times of the picture changes all at once. A cut is a peak that is much bigger than the
     movement around it (ratio), and is not too small (min_value)."""
     cuts = []
+    last = None   # index of the last cut found
     for i, v in enumerate(values):
         if v < min_value:
             continue
@@ -149,9 +150,10 @@ def detect_cuts(values, window=20, ratio=3.0, min_value=0.06):
             continue
         if v < max(values[max(0, i - 2):i + 3]):   # only the top of a peak
             continue
-        if cuts and i - cuts[-1] <= 2:             # one cut gives one peak
+        if last is not None and i - last <= 2:     # one cut gives one peak
             continue
         cuts.append(round(i * STEP, 1))
+        last = i
     return cuts
 
 
